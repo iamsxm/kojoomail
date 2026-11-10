@@ -6,8 +6,8 @@ import { Icon } from '../icons'
 import { useApp, pendingSends } from '../store'
 import { api, errText, type Addr, type DraftIn } from '../lib/api'
 import { parseAddrs, validEmail, fullTime } from '../lib/format'
-import { mdPreview, mdToHtml, quoteText } from '../lib/md'
-import { Seg, Sheet, useMenu } from '../ui'
+import { mdToHtml, quoteText } from '../lib/md'
+import { MdView, Seg, Sheet, useMenu } from '../ui'
 import { keyText } from '../lib/platform'
 import { L, EN } from '../lib/i18n'
 
@@ -133,7 +133,8 @@ export default function Compose() {
     s.refreshMeta()
   }
 
-  const placeholders = (body.match(/\[[^\]\n]{1,30}\]/g) || []).filter((p) => !/^\[[xX ]\]$/.test(p))
+  // 没填的占位：[日期] 这种。Markdown 的链接、图片 [文字](网址) 不算（签名里常有）；链接按钮插的 (https://) 还没填网址，照样提醒
+  const placeholders = (body.match(/\[[^\]\n]{1,30}\](?!\((?:https?:\/\/|mailto:|tel:)[^\s)])/gi) || []).filter((p) => !/^\[[xX ]\]$/.test(p))
   const facts = base?.ai?.facts || []
 
   const send = async () => {
@@ -257,7 +258,7 @@ export default function Compose() {
           {mode === 'edit' ? (
             <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('正文', 'Message body')} spellCheck={false} />
           ) : (
-            <div className="preview" dangerouslySetInnerHTML={{ __html: mdPreview(body) || `<p style="color:var(--ter)">${L('（空）', '(empty)')}</p>` }} />
+            <MdView className="preview" md={body} />
           )}
           {initial.quote && (
             <div style={{ padding: '0 24px 8px' }}>

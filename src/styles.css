@@ -398,6 +398,12 @@ a { color: var(--navy); }
 .set-main .group .gr .field.inset { max-width: 46%; }
 .set-main h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -.022em; }
 .set-main .lead { margin: 4px 0 0; font-size: 13px; color: var(--sec); }
+/* 签名预览：按发出去的样子显示，白底、字体字号和发信时套的一样（签名里的颜色、图片多是按白底配的），深色主题下也不变，和读信的白底卡片一个道理。
+   最小高度和三行的输入框一样，切换时下面的内容不跳 */
+.sig-preview { min-height: 77px; max-height: 320px; overflow: auto; padding: 8px 12px; border-radius: 8px; background: #fff; color: #1F2A37; color-scheme: light; box-shadow: 0 0 0 .5px var(--line); font: 14px/1.6 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; letter-spacing: 0; user-select: text; }
+.sig-preview a { color: #1B4A80; }
+.sig-preview > :first-child { margin-top: 0; }
+.sig-preview > :last-child { margin-bottom: 0; }
 
 /* 写信 */
 .compose { width: min(1000px, calc(100vw - 80px)); max-width: none; height: calc(100vh - 100px); }
