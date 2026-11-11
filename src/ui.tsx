@@ -102,7 +102,7 @@ export function MdView({ md, className }: { md: string; className: string }) {
       if (!a) return
       e.preventDefault()
       const href = (a.getAttribute('href') || '').trim()
-      if (/^https?:/i.test(href)) api.openUrl(href).catch((err) => useApp.getState().toast(L(`链接打不开：${errText(err)}`, `Couldn't open the link: ${errText(err)}`), { kind: 'err' }))
+      if (/^(?:https?:|mailto:)/i.test(href)) api.openUrl(href).catch((err) => useApp.getState().toast(L(`链接打不开：${errText(err)}`, `Couldn't open the link: ${errText(err)}`), { kind: 'err' }))
     }} />
   )
 }
