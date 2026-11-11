@@ -41,12 +41,12 @@ export default function Compose() {
     if (c.prefill?.subject != null) subject = c.prefill.subject
     const d = c.draft
     if (d) {
-      // 草稿里存的正文已经带着引用，原样恢复
-      return { accountId: d.accountId || accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.body, quote: '', files: d.attachments || [], replyMsg: d.replyMsg ?? null, mode: d.mode || 'new' }
+      // 草稿里存的正文已经带着引用，原样恢复；签名现在单独显示，草稿末尾带的那份去掉
+      const sig = me(d.accountId || accountId)?.signature || ''
+      const body = sig && d.body.endsWith(`\n\n${sig}`) ? d.body.slice(0, -sig.length - 2) : d.body
+      return { accountId: d.accountId || accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body, quote: '', files: d.attachments || [], replyMsg: d.replyMsg ?? null, mode: d.mode || 'new' }
     }
-    const sig = accountId ? me(accountId)?.signature : ''
-    const body = (c.prefill?.body ?? '') + (sig && !c.prefill?.body ? `\n\n${sig}` : '')
-    return { accountId, to, cc, bcc: [] as Addr[], subject, body, quote, files: [] as string[], replyMsg: base?.id ?? null, mode: c.mode === 'draft' ? 'new' : c.mode }
+    return { accountId, to, cc, bcc: [] as Addr[], subject, body: c.prefill?.body ?? '', quote, files: [] as string[], replyMsg: base?.id ?? null, mode: c.mode === 'draft' ? 'new' : c.mode }
   }, [c.key])
 
   const [accountId, setAccountId] = useState<number>(initial.accountId!)
@@ -68,9 +68,13 @@ export default function Compose() {
   const bodyRef = useRef<HTMLTextAreaElement>(null)
   const menu = useMenu()
 
+  const sig = me(accountId)?.signature || ''
+  // 签名不进编辑框：正文下面单独排好版显示，发送、预览和存草稿时拼在末尾
+  const withSig = sig ? (body.trim() ? `${body}\n\n${sig}` : sig) : body
+
   const draft = (): DraftIn => ({
     id: draftId, accountId, to: rc.to, cc: rc.cc, bcc: rc.bcc, subject,
-    body: body + (initial.quote ? initial.quote : ''), html: '', replyMsg: initial.replyMsg, mode: initial.mode, attachments: files,
+    body: withSig + (initial.quote ? initial.quote : ''), html: '', replyMsg: initial.replyMsg, mode: initial.mode, attachments: files,
   })
 
   // 自动存草稿：停止输入 2 秒后
@@ -134,7 +138,7 @@ export default function Compose() {
   }
 
   // 没填的占位：[日期] 这种。Markdown 的链接、图片 [文字](网址) 不算（签名里常有）；链接按钮插的 (https://) 还没填网址，照样提醒
-  const placeholders = (body.match(/\[[^\]\n]{1,30}\](?!\((?:https?:\/\/|mailto:|tel:)[^\s)])/gi) || []).filter((p) => !/^\[[xX ]\]$/.test(p))
+  const placeholders = (withSig.match(/\[[^\]\n]{1,30}\](?!\((?:https?:\/\/|mailto:|tel:)[^\s)])/gi) || []).filter((p) => !/^\[[xX ]\]$/.test(p))
   const facts = base?.ai?.facts || []
 
   const send = async () => {
@@ -227,16 +231,7 @@ export default function Compose() {
         <div className="c-edit" style={{ position: 'relative' }}>
           <div className="c-field">
             <span className="k">{L('发件人', 'From')}</span>
-            <select value={accountId} onChange={(e) => {
-              const next = Number(e.target.value)
-              const oldSig = me(accountId)?.signature || ''
-              const newSig = me(next)?.signature || ''
-              if (oldSig !== newSig) {
-                if (oldSig && body.endsWith(`\n\n${oldSig}`)) setBody(body.slice(0, -oldSig.length - 2) + (newSig ? `\n\n${newSig}` : ''))
-                else if (!oldSig && newSig && !body.includes(newSig)) setBody(`${body}\n\n${newSig}`)
-              }
-              setAccountId(next); touch()
-            }} className="field" style={{ width: 'auto', height: 28, fontSize: 13, padding: '0 8px', maxWidth: '100%' }} aria-label={L('发件账号', 'Sending account')}>
+            <select value={accountId} onChange={(e) => { setAccountId(Number(e.target.value)); touch() }} className="field" style={{ width: 'auto', height: 28, fontSize: 13, padding: '0 8px', maxWidth: '100%' }} aria-label={L('发件账号', 'Sending account')}>
               {s.accounts.map((a) => <option key={a.id} value={a.id}>{(a.label ? `${a.label} · ` : '') + a.email}</option>)}
             </select>
           </div>
@@ -256,9 +251,17 @@ export default function Compose() {
             )}
           </div>
           {mode === 'edit' ? (
-            <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('正文', 'Message body')} spellCheck={false} />
+            <>
+              <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('正文', 'Message body')} spellCheck={false} />
+              {sig && (
+                <div className="c-sig">
+                  <span className="k">{L('签名（发送时自动加在末尾）', 'Signature (added when sent)')}</span>
+                  <MdView className="sig-preview" md={sig} />
+                </div>
+              )}
+            </>
           ) : (
-            <MdView className="preview" md={body} />
+            <MdView className="preview" md={withSig} />
           )}
           {initial.quote && (
             <div style={{ padding: '0 24px 8px' }}>
