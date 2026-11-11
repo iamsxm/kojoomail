@@ -6,7 +6,7 @@ import { Icon } from '../icons'
 import { useApp, pendingSends } from '../store'
 import { api, errText, type Addr, type DraftIn } from '../lib/api'
 import { parseAddrs, validEmail, fullTime } from '../lib/format'
-import { mdToHtml, quoteText } from '../lib/md'
+import { mdToHtml, quoteText, withSignature } from '../lib/md'
 import { MdView, Seg, Sheet, useMenu } from '../ui'
 import { keyText } from '../lib/platform'
 import { L, EN } from '../lib/i18n'
@@ -41,9 +41,12 @@ export default function Compose() {
     if (c.prefill?.subject != null) subject = c.prefill.subject
     const d = c.draft
     if (d) {
-      // 草稿里存的正文已经带着引用，原样恢复；签名现在单独显示，草稿末尾带的那份去掉
+      // 草稿里存的正文已经带着引用，原样恢复；签名现在单独显示，草稿末尾带的那份去掉（新旧两种拼法都认）
       const sig = me(d.accountId || accountId)?.signature || ''
-      const body = sig && d.body.endsWith(`\n\n${sig}`) ? d.body.slice(0, -sig.length - 2) : d.body
+      let body = d.body
+      for (const tail of [`\n\n-- \n${sig}`, `\n\n${sig}`]) {
+        if (sig && body.endsWith(tail)) { body = body.slice(0, -tail.length); break }
+      }
       return { accountId: d.accountId || accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body, quote: '', files: d.attachments || [], replyMsg: d.replyMsg ?? null, mode: d.mode || 'new' }
     }
     return { accountId, to, cc, bcc: [] as Addr[], subject, body: c.prefill?.body ?? '', quote, files: [] as string[], replyMsg: base?.id ?? null, mode: c.mode === 'draft' ? 'new' : c.mode }
@@ -69,8 +72,8 @@ export default function Compose() {
   const menu = useMenu()
 
   const sig = me(accountId)?.signature || ''
-  // 签名不进编辑框：正文下面单独排好版显示，发送、预览和存草稿时拼在末尾
-  const withSig = sig ? (body.trim() ? `${body}\n\n${sig}` : sig) : body
+  // 签名不进编辑框：正文下面单独排好版显示，发送、预览和存草稿时拼在末尾（带正文/签名分隔）
+  const { text: withSig, md: withSigMd } = withSignature(body, sig)
 
   const draft = (): DraftIn => ({
     id: draftId, accountId, to: rc.to, cc: rc.cc, bcc: rc.bcc, subject,
@@ -155,7 +158,7 @@ export default function Compose() {
     if (!subject.trim() && !await ask(L('没有主题，确定发送吗？', 'No subject. Send anyway?'))) return
     const d = draft()
     try { await api.precheckSend(d) } catch (e) { s.toast(errText(e), { kind: 'err', ttl: 8000 }); return }
-    d.html = mdToHtml(d.body)
+    d.html = mdToHtml(withSigMd + (initial.quote ? initial.quote : ''))
     // 先存草稿：发送失败或撤销时内容不会丢
     try { d.id = await api.saveDraft({ ...d, html: '' }) } catch { /* */ }
     s.set({ compose: null })
@@ -261,7 +264,7 @@ export default function Compose() {
               )}
             </>
           ) : (
-            <MdView className="preview" md={withSig} />
+            <MdView className="preview" md={withSigMd} />
           )}
           {initial.quote && (
             <div style={{ padding: '0 24px 8px' }}>

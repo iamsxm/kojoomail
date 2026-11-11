@@ -4,7 +4,7 @@ import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { JSDOM } from 'jsdom'
 
-let mdPreview, mdToHtml, DOMPurify
+let mdPreview, mdToHtml, withSignature, DOMPurify
 
 before(async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>')
@@ -12,7 +12,7 @@ before(async () => {
   for (const k of ['window', 'document', 'Node', 'Element', 'NodeFilter', 'NamedNodeMap', 'DOMParser', 'HTMLFormElement', 'HTMLTemplateElement', 'DocumentFragment']) {
     globalThis[k] = k === 'window' ? dom.window : dom.window[k]
   }
-  ;({ mdPreview, mdToHtml } = await import('../src/lib/md.ts'))
+  ;({ mdPreview, mdToHtml, withSignature } = await import('../src/lib/md.ts'))
   ;({ default: DOMPurify } = await import('dompurify'))
 })
 
@@ -160,6 +160,16 @@ test('mdToHtml 外面套发信用的字体和颜色，预览不带这层', () =>
 test('空输入和纯空白不产出东西', () => {
   assert.equal(mdPreview(''), '')
   assert.equal(mdPreview('   \n  '), '')
+})
+
+test('正文和签名之间有分隔：HTML 一条细线，纯文本 RFC 3676 的 "-- "', () => {
+  const { text, md } = withSignature('正文内容', '<span style="color:red">签名</span>')
+  assert.equal(text, '正文内容\n\n-- \n<span style="color:red">签名</span>')
+  const html = mdPreview(md)
+  assert.match(html, /<div style="border-top:1px solid #d8d8d8;margin:18px 0 12px"><\/div>/)
+  assert.ok(html.indexOf('正文内容') < html.indexOf('签名'))
+  assert.equal(withSignature('', 'sig').text, 'sig')
+  assert.equal(withSignature('body', '').text, 'body')
 })
 
 test('钩子只作用于写信这边：读信用的默认 DOMPurify 实例不受影响', () => {

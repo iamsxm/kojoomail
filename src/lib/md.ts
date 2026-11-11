@@ -127,6 +127,15 @@ const CONFIG = {
 // 发出去的也一样去掉，预览和实际发的才一致；样式写在标签的 style 属性里，各家邮箱也只认这种
 const render = (md: string) => purify.sanitize(marked.parse(md, { async: false }) as string, CONFIG).trim()
 
+/** 正文和签名之间的分隔：HTML 用一条细灰线（和别家客户端收到的观感一致），纯文本用 RFC 3676 的 "-- " 分隔行 */
+export const SIG_RULE = '<div style="border-top:1px solid #d8d8d8;margin:18px 0 12px"></div>'
+
+export function withSignature(body: string, sig: string) {
+  if (!sig) return { text: body, md: body }
+  if (!body.trim()) return { text: sig, md: sig }
+  return { text: `${body}\n\n-- \n${sig}`, md: `${body}\n\n${SIG_RULE}\n\n${sig}` }
+}
+
 export function mdToHtml(md: string) {
   return `<div style="font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;font-size:14px;line-height:1.6;color:#1F2A37">${render(md)}</div>`
 }
