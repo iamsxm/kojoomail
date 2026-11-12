@@ -27,6 +27,15 @@ jobs:
 
       - run: npm run build
 
+      # 先编译检查，别把 Rust 错误拖到 20 分钟的打包步骤才暴露
+      - name: Cargo check
+        run: cargo check --workspace --all-targets
+        working-directory: src-tauri
+
+      - name: Build MCP stdio bridge
+        run: cargo build --release -p kojoomail-mcp
+        working-directory: src-tauri
+
       # 没有更新签名私钥，关掉 updater 产物
       - name: Build NSIS installer
         shell: bash
@@ -38,4 +47,5 @@ jobs:
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/kojoomail.exe
+            src-tauri/target/release/kojoomail-mcp.exe
           if-no-files-found: error

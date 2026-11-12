@@ -1,3 +1,6 @@
+[workspace]
+members = ["mcp-proxy"]
+
 [package]
 name = "kojoomail"
 version = "0.3.1"
@@ -43,6 +46,21 @@ regex = { version = "1", default-features = false, features = ["std", "unicode-p
 dirs = "5"
 # 读系统语言：界面「跟随系统」时用
 sys-locale = "0.3"
+
+# MCP 服务端：默认关闭，开启后才监听 127.0.0.1，不引入任何定时器
+rmcp = { version = "3.9", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+tokio-util = "0.7"
+tower-service = "0.3"
+
+[dev-dependencies]
+# 只在 cargo test 里连自己：发布二进制不链入客户端代码
+rmcp = { version = "3.9", default-features = false, features = ["client", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
 
 [profile.release]
 opt-level = "s"

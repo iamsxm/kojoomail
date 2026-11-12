@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - 'ci/**'
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node node_modules/typescript/bin/tsc --noEmit
+      - run: npm test
+
+  # 代理不依赖 tauri，可以在 Linux 上编译，一分钟拿到反馈
+  proxy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: proxy
+      - run: cargo check -p kojoomail-mcp --all-targets
+        working-directory: src-tauri
+
+  rust-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # generate_context! 会把 ../dist 嵌进二进制，cargo check 也要先有前端产物
+      - run: npm ci
+      - run: npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: app
+      - run: cargo check --workspace --all-targets
+        working-directory: src-tauri
+      - run: cargo test --lib
+        working-directory: src-tauri
