@@ -48,6 +48,14 @@ jobs:
         with:
           workspaces: src-tauri -> target
           key: app
+      # externalBin 要求文件先在位，tauri-build 在 cargo check 阶段就会校验
+      - run: cargo build --release -p kojoomail-mcp
+        working-directory: src-tauri
+      - name: Stage MCP bridge
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          cp src-tauri/target/release/kojoomail-mcp.exe src-tauri/binaries/kojoomail-mcp-x86_64-pc-windows-msvc.exe
       - run: cargo check --workspace --all-targets
         working-directory: src-tauri
       - run: cargo test --lib

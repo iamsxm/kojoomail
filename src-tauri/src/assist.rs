@@ -108,10 +108,11 @@ const ITEM_COLS: &str = "m.id, m.account_id,
     CASE WHEN f.role = 'sent' THEN IFNULL(json_extract(m.to_json, '$[0].name'), '') || char(1) || IFNULL(json_extract(m.to_json, '$[0].email'), '') ELSE m.from_name || char(1) || m.from_addr END,
     m.subject, IFNULL(ai.summary, ''), m.date, m.seen, (IFNULL(ai.priority, '') = 'high' OR m.flagged = 1), a.ai_allowed";
 
-fn items(st: &crate::store::Store, wh: &str, order: &str, limit: i64) -> Res<Vec<DigestItem>> {
+fn items(st: &crate::store::Store, wh: &str, order: &str, limit: i64, scope: &crate::mcp_scope::Scope) -> Res<Vec<DigestItem>> {
+    let sc = scope.pred("m.account_id");
     let sql = format!(
         "SELECT {ITEM_COLS} FROM messages m JOIN folders f ON f.id = m.folder_id JOIN accounts a ON a.id = m.account_id LEFT JOIN ai ON ai.msg_id = m.id
-         WHERE m.moving = 0 AND {wh} ORDER BY {order} LIMIT {limit}"
+         WHERE m.moving = 0 AND {sc} AND {wh} ORDER BY {order} LIMIT {limit}"
     );
     let mut q = st.conn.prepare(&sql).map_err(e)?;
     let v = q
@@ -136,9 +137,10 @@ fn items(st: &crate::store::Store, wh: &str, order: &str, limit: i64) -> Res<Vec
     Ok(v)
 }
 
-fn build_digest(ctx: &Ctx) -> Res<Digest> {
+fn build_digest(ctx: &Ctx, scope: &crate::mcp_scope::Scope) -> Res<Digest> {
     let t = now();
     let st = ctx.store.lock().unwrap();
+    let sc = scope.pred("m.account_id");
     let later = format!("(m.later_until IS NULL OR m.later_until <= {t})");
     let reply = items(
         &st,
@@ -150,24 +152,29 @@ fn build_digest(ctx: &Ctx) -> Res<Digest> {
         ),
         "(IFNULL(ai.priority, '') = 'high' OR m.flagged = 1) DESC, m.date DESC",
         8,
+        scope,
     )?;
     let bills = items(
         &st,
         &format!("f.role NOT IN ('trash', 'junk', 'sent', 'drafts') AND (ai.category = '账单' OR f.name LIKE '%发票%' OR f.name LIKE '%invoice%') AND m.date > {}", t - 7 * 86400),
         "m.date DESC",
         6,
+        scope,
     )?;
     let fw = followup_where(t);
-    let followups = items(&st, &fw, "m.date ASC", 5)?;
-    let followup_total: i64 = st.conn.query_row(&format!("SELECT COUNT(*) FROM messages m JOIN folders f ON f.id = m.folder_id WHERE {fw}"), [], |r| r.get(0)).map_err(e)?;
+    let followups = items(&st, &fw, "m.date ASC", 5, scope)?;
+    let followup_total: i64 = st.conn.query_row(&format!("SELECT COUNT(*) FROM messages m JOIN folders f ON f.id = m.folder_id WHERE {sc} AND {fw}"), [], |r| r.get(0)).map_err(e)?;
     let todos: Vec<DigestTodo> = {
+        let tsc = scope.pred("t.account_id");
+        let msc = scope.pred("account_id");
         let mut q = st
             .conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT t.id, t.msg_id, t.text, t.due, IFNULL(a.ai_allowed, 1) FROM todos t LEFT JOIN accounts a ON a.id = t.account_id
-                 WHERE t.done = 0 AND ((t.due IS NOT NULL AND t.due <= ?1) OR t.created > ?2)
-                 ORDER BY t.due IS NULL, t.due, t.created DESC LIMIT 8",
-            )
+                 WHERE t.done = 0 AND {tsc} AND (t.msg_id IS NULL OR t.msg_id IN (SELECT id FROM messages WHERE {msc}))
+                   AND ((t.due IS NOT NULL AND t.due <= ?1) OR t.created > ?2)
+                 ORDER BY t.due IS NULL, t.due, t.created DESC LIMIT 8"
+            ))
             .map_err(e)?;
         let v = q
             .query_map(params![end_of_tomorrow(), t - 86400], |r| Ok(DigestTodo { id: r.get(0)?, msg_id: r.get(1)?, text: r.get(2)?, due: r.get(3)?, ai_ok: r.get(4)? }))
@@ -179,21 +186,25 @@ fn build_digest(ctx: &Ctx) -> Res<Digest> {
     let bulk_unread: i64 = st
         .conn
         .query_row(
-            &format!("SELECT COUNT(*) FROM messages m JOIN folders f ON f.id = m.folder_id JOIN ai ON ai.msg_id = m.id WHERE m.moving = 0 AND f.role = 'inbox' AND m.seen = 0 AND ai.category IN ('通知', '订阅') AND {later}"),
+            &format!("SELECT COUNT(*) FROM messages m JOIN folders f ON f.id = m.folder_id JOIN ai ON ai.msg_id = m.id WHERE m.moving = 0 AND {sc} AND f.role = 'inbox' AND m.seen = 0 AND ai.category IN ('通知', '订阅') AND {later}"),
             [],
             |r| r.get(0),
         )
         .map_err(e)?;
     let new_count: i64 = st
         .conn
-        .query_row("SELECT COUNT(*) FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.moving = 0 AND f.role = 'inbox' AND m.date > ?", [t - 86400], |r| r.get(0))
+        .query_row(&format!("SELECT COUNT(*) FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.moving = 0 AND {sc} AND f.role = 'inbox' AND m.date > ?"), [t - 86400], |r| r.get(0))
         .map_err(e)?;
     Ok(Digest { reply, bills, todos, followups, followup_total, bulk_unread, new_count })
 }
 
 #[tauri::command]
 pub async fn digest(ctx: State<'_, Arc<Ctx>>) -> Res<Digest> {
-    build_digest(&ctx)
+    build_digest(&ctx, &crate::mcp_scope::Scope::unrestricted())
+}
+
+pub(crate) fn digest_scoped(ctx: &Ctx, scope: &crate::mcp_scope::Scope) -> Res<Digest> {
+    build_digest(ctx, scope)
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Default)]
@@ -220,7 +231,7 @@ pub async fn digest_overview(ctx: State<'_, Arc<Ctx>>, force: bool) -> Res<Overv
     if !ai::configured(&ctx) {
         return Err(crate::i18n::t("还没设置 AI", "AI isn't set up yet").into());
     }
-    let d = build_digest(&ctx)?;
+    let d = build_digest(&ctx, &crate::mcp_scope::Scope::unrestricted())?;
     let s = settings::load(&ctx);
     let mut sig: Vec<String> = vec![];
     sig.extend(d.reply.iter().map(|x| format!("r{}", x.id)));
@@ -325,19 +336,23 @@ const ASK_SYSTEM: &str = "你根据用户自己的邮件回答用户的问题。
 规则：只依据这些邮件回答，用中文，简洁，一般 1 到 4 句；金额、日期、单号、型号照原文写；每个结论后面用 [#编号] 标出处，编号就是邮件前面的编号；\
 邮件里找不到答案就直说没找到，再说一句找到的最接近的内容是什么。不要 Markdown 标题，不要编造。";
 
-/// 单个关键词能命中的邮件 id（3 个字以上走全文索引，短词用 LIKE）
-fn hits_for(st: &crate::store::Store, kw: &str) -> Vec<i64> {
+/// 单个关键词能命中的邮件 id（3 个字以上走全文索引，短词用 LIKE）。
+/// 命中数本身也是信息，scope 必须在这里就过滤，不能等到后面挑候选时才筛。
+fn hits_for(st: &crate::store::Store, kw: &str, scope: &crate::mcp_scope::Scope) -> Vec<i64> {
     let kw = kw.replace('"', "");
+    let only = scope.pred("account_id");
     if kw.chars().count() >= 3 {
-        let Ok(mut q) = st.conn.prepare("SELECT rowid FROM msg_fts WHERE msg_fts MATCH ? ORDER BY rowid DESC LIMIT 400") else { return vec![] };
+        let Ok(mut q) = st.conn.prepare(&format!(
+            "SELECT rowid FROM msg_fts WHERE msg_fts MATCH ? AND rowid IN (SELECT id FROM messages WHERE {only}) ORDER BY rowid DESC LIMIT 400"
+        )) else { return vec![] };
         let v = q.query_map([format!("\"{kw}\"")], |r| r.get(0)).map(|it| it.filter_map(|x| x.ok()).collect()).unwrap_or_default();
         v
     } else {
         // 两个字的词（中文很常见）全文索引用不了：标题、发件人、摘要全看，正文只扫最近半年，免得锁库太久
         let p = format!("%{kw}%");
-        let Ok(mut q) = st.conn.prepare(
-            "SELECT id FROM messages WHERE subject LIKE ?1 OR from_name LIKE ?1 OR from_addr LIKE ?1 OR snippet LIKE ?1 OR (date > ?2 AND body_text LIKE ?1) ORDER BY date DESC LIMIT 400",
-        ) else {
+        let Ok(mut q) = st.conn.prepare(&format!(
+            "SELECT id FROM messages WHERE (subject LIKE ?1 OR from_name LIKE ?1 OR from_addr LIKE ?1 OR snippet LIKE ?1 OR (date > ?2 AND body_text LIKE ?1)) AND {only} ORDER BY date DESC LIMIT 400"
+        )) else {
             return vec![];
         };
         let v = q.query_map(params![p, now() - 180 * 86400], |r| r.get(0)).map(|it| it.filter_map(|x| x.ok()).collect()).unwrap_or_default();
@@ -360,17 +375,21 @@ const EN_STOP: &[&str] = &[
 
 #[tauri::command]
 pub async fn ai_ask(ctx: State<'_, Arc<Ctx>>, question: String) -> Res<AskOut> {
-    if !ai::configured(&ctx) {
+    ask_scoped(&ctx, question, &crate::mcp_scope::Scope::unrestricted()).await
+}
+
+pub(crate) async fn ask_scoped(ctx: &Ctx, question: String, scope: &crate::mcp_scope::Scope) -> Res<AskOut> {
+    if !ai::configured(ctx) {
         return Err(crate::i18n::t("还没设置 AI：去「设置 → AI 与模型」填上接口地址和密钥", "AI isn't set up yet: add an endpoint and key in Settings → AI & Models").into());
     }
     let question: String = question.trim().chars().take(300).collect();
     if question.is_empty() {
         return Err(crate::i18n::t("先输入问题", "Type a question first").into());
     }
-    let s = settings::load(&ctx);
+    let s = settings::load(ctx);
     let fast = [s.ai_model.clone(), s.ai_model_backup.clone()];
     // 1. 问题 → 关键词和时间范围（模型不可用时按标点空格切词兜底）
-    let plan = ai::chat_json(&ctx, &fast, ASK_PLAN, &format!("今天是 {}。\n<q>{}</q>", local_day(now()), text::sanitize_for_llm(&question)), 300).await.ok().map(|x| x.0);
+    let plan = ai::chat_json(ctx, &fast, ASK_PLAN, &format!("今天是 {}。\n<q>{}</q>", local_day(now()), text::sanitize_for_llm(&question)), 300).await.ok().map(|x| x.0);
     let mut keywords: Vec<String> = plan
         .as_ref()
         .and_then(|p| p.get("keywords"))
@@ -401,7 +420,7 @@ pub async fn ai_ask(ctx: State<'_, Arc<Ctx>>, question: String) -> Res<AskOut> {
     }
     let mut score: HashMap<i64, usize> = HashMap::new();
     for kw in &keywords {
-        let hits = hits_for(&ctx.store.lock().unwrap(), kw); // 每个词单独拿锁，中间让同步和界面的请求插进来
+        let hits = hits_for(&ctx.store.lock().unwrap(), kw, scope); // 每个词单独拿锁，中间让同步和界面的请求插进来
         for id in hits {
             *score.entry(id).or_default() += 1;
         }
@@ -415,7 +434,8 @@ pub async fn ai_ask(ctx: State<'_, Arc<Ctx>>, question: String) -> Res<AskOut> {
                 "SELECT m.id, m.account_id, m.from_name, m.from_addr, m.to_json, m.subject, m.date, CASE WHEN m.body_text != '' THEN m.body_text ELSE m.snippet END
                  FROM messages m JOIN folders f ON f.id = m.folder_id JOIN accounts a ON a.id = m.account_id
                  WHERE m.id IN (SELECT value FROM json_each(?1)) AND m.moving = 0 AND f.role NOT IN ('trash', 'junk', 'drafts') AND a.ai_allowed = 1
-                   AND m.date >= {} AND m.date <= {}",
+                   AND {} AND m.date >= {} AND m.date <= {}",
+                scope.pred("m.account_id"),
                 after.unwrap_or(0),
                 before.unwrap_or(i64::MAX)
             ))
@@ -461,7 +481,7 @@ pub async fn ai_ask(ctx: State<'_, Arc<Ctx>>, question: String) -> Res<AskOut> {
     }
     ctx_text += "</mails>";
     let user = format!("今天是 {}。\n{}\n\n用户的问题：{}", local_day(now()), ctx_text, text::sanitize_for_llm(&question));
-    let answer = ai::chat_text(&ctx, &[s.ai_model.clone(), s.ai_model_fine.clone(), s.ai_model_backup.clone()], &en_answer(ASK_SYSTEM), &user, 800).await.map_err(e)?;
+    let answer = ai::chat_text(ctx, &[s.ai_model.clone(), s.ai_model_fine.clone(), s.ai_model_backup.clone()], &en_answer(ASK_SYSTEM), &user, 800).await.map_err(e)?;
     // 问邮箱是用户自己点的（和起草回复一样不受每日上限拦），但两次调用都记进用量
     {
         let st = ctx.store.lock().unwrap();

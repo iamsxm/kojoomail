@@ -168,10 +168,15 @@ impl Downstream {
 
 #[derive(Clone)]
 struct Upstream {
+    info: ClientConfig,
     downstream: Downstream,
 }
 
 impl ClientHandler for Upstream {
+    fn get_info(&self) -> ClientConfig {
+        self.info.clone()
+    }
+
     async fn on_tool_list_changed(&self, _ctx: NotificationContext<RoleClient>) {
         if let Some(peer) = self.downstream.get() {
             let _ = peer.notify_tool_list_changed().await;
@@ -223,23 +228,24 @@ async fn main() -> Result<()> {
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(d.url.clone()).auth_header(d.token.clone()),
     );
-    let client = ClientConfig::new(
+    let mut upstream_info = ClientConfig::new(
         ClientCapabilities::default(),
         Implementation::new("kojoomail-mcp", env!("CARGO_PKG_VERSION")),
-    )
-    .serve_with_lifecycle(
-        transport,
-        ClientLifecycleMode::Initialize,
-    )
+    );
+    upstream_info.protocol_version = MAX_VERSION;
+    let client = Upstream {
+        info: upstream_info,
+        downstream: downstream.clone(),
+    }
+    .serve_with_lifecycle(transport, ClientLifecycleMode::Initialize)
     .await
     .map_err(|e| anyhow!("连接 Kojoo Mail 的 MCP 服务失败：{e}"))?;
 
-    let mut info = client
-        .peer_info()
-        .map(|i| (*i).clone())
-        .unwrap_or_else(|| ServerConfig::new(Default::default()));
+    let peer = client.peer_info();
+    let mut info = ServerConfig::new(peer.as_ref().map(|p| p.capabilities.clone()).unwrap_or_default())
+        .with_server_info(Implementation::new("kojoomail-mcp", env!("CARGO_PKG_VERSION")));
     info.protocol_version = MAX_VERSION;
-    info.server_info = Implementation::new("kojoomail-mcp", env!("CARGO_PKG_VERSION"));
+    info.instructions = peer.and_then(|p| p.instructions.clone());
 
     let bridge = Bridge {
         upstream: client.peer().clone(),

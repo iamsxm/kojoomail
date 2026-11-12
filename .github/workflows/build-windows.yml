@@ -27,13 +27,20 @@ jobs:
 
       - run: npm run build
 
+      # externalBin 要求文件先在位，tauri-build 在 cargo check 阶段就会校验
+      - name: Build MCP stdio bridge
+        run: cargo build --release -p kojoomail-mcp
+        working-directory: src-tauri
+
+      - name: Stage MCP bridge for bundling
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          cp src-tauri/target/release/kojoomail-mcp.exe src-tauri/binaries/kojoomail-mcp-x86_64-pc-windows-msvc.exe
+
       # 先编译检查，别把 Rust 错误拖到 20 分钟的打包步骤才暴露
       - name: Cargo check
         run: cargo check --workspace --all-targets
-        working-directory: src-tauri
-
-      - name: Build MCP stdio bridge
-        run: cargo build --release -p kojoomail-mcp
         working-directory: src-tauri
 
       # 没有更新签名私钥，关掉 updater 产物

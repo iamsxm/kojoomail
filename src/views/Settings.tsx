@@ -3,7 +3,8 @@ import { ask } from '../lib/ask'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Icon } from '../icons'
 import { useApp } from '../store'
-import { api, errText, FOCUS_CATS, type Account } from '../lib/api'
+import { api, errText, FOCUS_CATS, type Account, type McpInfo } from '../lib/api'
+import { copyText, mcpJson, mcpToml } from '../lib/mcp'
 import { ACCOUNT_COLORS, ago } from '../lib/format'
 import { MdView, Seg, Switch } from '../ui'
 import { GuideContent } from './Guide'
@@ -12,7 +13,7 @@ import { L, catLabel } from '../lib/i18n'
 
 // 侧栏分组，和主界面侧栏一样带小标题
 const GROUPS: [string, [string, string, string][]][] = [
-  [L('基本', 'Basics'), [['general', 'gear', L('通用', 'General')], ['accounts', 'mail', L('账号', 'Accounts')], ['ai', 'sparkle', L('AI 与模型', 'AI & models')]]],
+  [L('基本', 'Basics'), [['general', 'gear', L('通用', 'General')], ['accounts', 'mail', L('账号', 'Accounts')], ['ai', 'sparkle', L('AI 与模型', 'AI & models')], ['mcp', 'external', L('MCP 服务', 'MCP server')]]],
   [L('提醒与操作', 'Alerts & controls'), [['notify', 'bell', L('通知与隐私', 'Notifications & privacy')], ['keys', 'keyboard', L('快捷键', 'Shortcuts')]]],
   [L('帮助', 'Help'), [['guide', 'doc', L('使用教程', 'Guide')], ['about', 'info', L('关于', 'About')]]],
 ]
@@ -42,6 +43,7 @@ export default function SettingsPage() {
           {tab === 'general' && <General />}
           {tab === 'accounts' && <Accounts />}
           {tab === 'ai' && <Ai />}
+          {tab === 'mcp' && <Mcp />}
           {tab === 'notify' && <NotifyPrivacy />}
           {tab === 'keys' && <Keys />}
           {tab === 'guide' && <><Head title={L('使用教程', 'Guide')} lead={L('五分钟了解 Kojoo Mail 怎么用。', 'Learn Kojoo Mail in five minutes.')} /><GuideContent /></>}
@@ -365,6 +367,120 @@ function Ai() {
             <Icon name="lock" style={{ color: 'var(--sec)' }} />
             <div className="grow"><div className="lbl">{L('AI 只能起草，不能自动发送', 'AI can only draft, never send')}</div><div className="sub">{L('防止来信里夹带指令让 AI 代你发信，这一项不能关闭', "Stops instructions hidden in incoming mail from making AI send email for you. This can't be turned off")}</div></div>
             <span className="tag">{L('始终开启', 'Always on')}</span>
+          </div>
+        </div>
+      </section>
+    </>
+  )
+}
+
+function Mcp() {
+  const s = useApp()
+  const st = s.settings!
+  const [info, setInfo] = useState<McpInfo | null>(null)
+  const [showToken, setShowToken] = useState(false)
+  const [fmt, setFmt] = useState<'json' | 'toml'>('json')
+  const [copied, setCopied] = useState('')
+
+  useEffect(() => {
+    if (!st.mcpEnabled) { setInfo(null); return }
+    let alive = true
+    api.mcpConfig().then((v) => { if (alive) setInfo(v) }).catch(() => {})
+    return () => { alive = false }
+  }, [st.mcpEnabled, st.mcpPort])
+
+  const copy = async (what: string, text: string) => {
+    const ok = await copyText(text)
+    s.toast(ok ? L('已复制', 'Copied') : L('复制失败，请手动选中复制', "Couldn't copy — select the text and copy manually"), { kind: ok ? undefined : 'err' })
+    if (ok) { setCopied(what); setTimeout(() => setCopied(''), 1500) }
+  }
+  const snippet = info?.proxyPath ? (fmt === 'json' ? mcpJson(info.proxyPath) : mcpToml(info.proxyPath)) : ''
+
+  return (
+    <>
+      <Head title={L('MCP 服务', 'MCP server')} lead={L('让本机的 AI agent（Claude Code、Codex、Cursor 等）通过标准 MCP 协议读你的邮件。', 'Let AI agents on this computer (Claude Code, Codex, Cursor…) read your mail over the standard MCP protocol.')} />
+      <section>
+        <h2 className="gh">{L('服务', 'Server')}</h2>
+        <div className="group sq">
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div className="grow"><div className="lbl">{L('开启 MCP 服务', 'Enable the MCP server')}</div><div className="sub">{L('只监听本机 127.0.0.1，局域网访问不到。关着的时候不占端口、不跑任何后台任务', 'Listens on 127.0.0.1 only; not reachable from the network. When off it holds no port and runs no background task')}</div></div>
+            <Switch label={L('开启 MCP 服务', 'Enable the MCP server')} on={st.mcpEnabled} onChange={(v) => s.saveSettings({ mcpEnabled: v })} />
+          </div>
+          {st.mcpEnabled && (
+            <>
+              <div className="gr">
+                <span className="dot" style={{ background: info?.running ? 'var(--green)' : 'var(--ter)' }} />
+                <div className="grow"><div className="lbl">{info?.running ? L('已监听', 'Listening') : L('未监听', 'Not listening')}</div><div className="sub mono" style={{ wordBreak: 'break-all' }}>{info?.url || L('启动失败，看「关于 → 导出诊断」里的日志', "Startup failed — check the log via About → Export diagnostics")}</div></div>
+              </div>
+              <div className="gr" style={{ minHeight: 52 }}>
+                <div><label className="lbl" htmlFor="mcp-port">{L('端口', 'Port')}</label><div className="sub">{L('0＝每次随机。被占用时自动换一个，配置里的代理会自己找到新端口', '0 = random each time. If the port is taken it picks another; the proxy finds it automatically')}</div></div>
+                <input id="mcp-port" type="number" className="field inset num" style={{ width: 100, textAlign: 'right' }} min={0} max={65535} value={st.mcpPort} onChange={(e) => s.saveSettings({ mcpPort: Math.min(65535, Math.max(0, Number(e.target.value) || 0)) })} />
+              </div>
+              <div className="gr" style={{ minHeight: 52 }}>
+                <div><div className="lbl">{L('访问令牌', 'Access token')}</div><div className="sub">{L('每次请求都要带。换了之后已配置的 agent 全部失效', 'Required on every request. Regenerating it disconnects all configured agents')}</div></div>
+                <div className="row" style={{ gap: 6, ...COL }}>
+                  <input className="field inset mono" style={{ flex: 1, minWidth: 0 }} readOnly type={showToken ? 'text' : 'password'} value={info?.token || ''} aria-label={L('访问令牌', 'Access token')} />
+                  <button className="tb" aria-label={showToken ? L('隐藏', 'Hide') : L('显示', 'Show')} onClick={() => setShowToken(!showToken)}><Icon name="eye" size={15} /></button>
+                  <button className="btn sm sq" disabled={!info?.token} onClick={() => info?.token && copy('token', info.token)}>{copied === 'token' ? L('已复制', 'Copied') : L('复制', 'Copy')}</button>
+                  <button className="btn sm sq" onClick={async () => {
+                    if (!await ask(L('重新生成令牌？已经配置好的 agent 会全部断开，需要重新复制配置。', 'Regenerate the token? Every configured agent will disconnect and need the new config.'))) return
+                    try { setInfo(await api.mcpRegenerateToken()) } catch (e) { s.toast(errText(e), { kind: 'err' }) }
+                  }}>{L('重新生成', 'Regenerate')}</button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </section>
+      {st.mcpEnabled && (
+        <section>
+          <h2 className="gh">{L('接入 agent', 'Connect an agent')}</h2>
+          <div className="group sq">
+            <div style={{ padding: '12px 14px 14px' }}>
+              <div className="row" style={{ marginBottom: 10 }}>
+                <span className="lbl grow">{L('把下面这段填进 agent 的 MCP 配置', 'Paste this into your agent’s MCP config')}</span>
+                <Seg small value={fmt} onChange={setFmt} options={[['json', 'JSON'], ['toml', 'TOML']]} />
+              </div>
+              {info?.proxyPath ? (
+                <>
+                  <pre className="mono sq" style={{ margin: 0, padding: '10px 12px', background: 'var(--sunken, rgba(0,0,0,.04))', fontSize: 12, overflowX: 'auto', whiteSpace: 'pre' }}>{snippet}</pre>
+                  <div className="row" style={{ marginTop: 10, gap: 8 }}>
+                    <button className="btn sm sq" onClick={() => copy('cfg', snippet)}>{copied === 'cfg' ? L('已复制', 'Copied') : L('复制配置', 'Copy config')}</button>
+                    <span className="sub grow">{L('JSON 用于 Claude Code / Cursor / Qoder，TOML 用于 Codex。协议是通用 MCP，没有客户端专属适配', 'JSON for Claude Code / Cursor / Qoder, TOML for Codex. Plain MCP — no client-specific adapter')}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="sub">{L('找不到 kojoomail-mcp 代理程序。它和主程序装在同一个目录，重新安装一次即可', "Can't find the kojoomail-mcp proxy. It ships next to the main app — reinstall to restore it")}</div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+      <section>
+        <h2 className="gh">{L('权限', 'Permissions')}</h2>
+        <div className="group sq">
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div className="grow"><div className="lbl">{L('允许读取邮件', 'Allow reading mail')}</div><div className="sub">{L('列出账号和文件夹、搜索、读正文、查联系人和待办。当前版本只能读，不能发信、改标记或删邮件', 'List accounts and folders, search, read bodies, look up contacts and to-dos. This version is read-only: no sending, marking or deleting')}</div></div>
+            <Switch label={L('允许读取邮件', 'Allow reading mail')} on={st.mcpRead} onChange={(v) => s.saveSettings({ mcpRead: v })} />
+          </div>
+          {s.accounts.map((a) => (
+            <div className="gr" key={a.id}>
+              <span className="dot" style={{ background: a.color }} />
+              <div className="grow"><div className="lbl">{L(`${a.label || a.email} 允许读取`, `Allow reading ${a.label || a.email}`)}</div>{!a.mcpRead && <div className="sub">{L('已关闭：agent 看不到这个账号，也搜不到它的邮件', 'Off: the agent cannot see this account or find its mail')}</div>}</div>
+              <Switch label={L(`${a.email} 允许读取`, `Allow reading ${a.email}`)} on={a.mcpRead} onChange={async (v) => { await api.updateAccount(a.id, { mcpRead: v }); s.refreshMeta() }} />
+            </div>
+          ))}
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div className="grow"><div className="lbl">{L('允许调用会消耗 AI 额度的工具', 'Allow tools that spend AI quota')}</div><div className="sub">{L('开启后多一个「问邮箱」工具，每次调用都会走你配置的模型并计入每日上限。今日简报是本地算的，不花额度', 'Adds an "ask my mailbox" tool that calls your model and counts against the daily limit. The daily digest is computed locally and costs nothing')}</div></div>
+            <Switch label={L('允许调用会消耗 AI 额度的工具', 'Allow tools that spend AI quota')} on={st.mcpAllowAi} onChange={(v) => s.saveSettings({ mcpAllowAi: v })} />
+          </div>
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div><label className="lbl" htmlFor="mcp-chars">{L('单次返回正文上限', 'Body characters per call')}</label><div className="sub">{L('超出部分让 agent 分段续读，免得一次撑爆它的上下文', 'The agent reads the rest in follow-up calls, so one email cannot blow up its context')}</div></div>
+            <input id="mcp-chars" type="number" className="field inset num" style={{ width: 100, textAlign: 'right' }} min={200} max={50000} step={1000} value={st.mcpBodyMaxChars} onChange={(e) => s.saveSettings({ mcpBodyMaxChars: Number(e.target.value) || 0 })} />
+          </div>
+          <div className="gr" style={{ minHeight: 52 }}>
+            <Icon name="lock" style={{ color: 'var(--sec)' }} />
+            <div className="grow"><div className="lbl">{L('存附件会写到「下载」文件夹', 'Saving an attachment writes to your Downloads folder')}</div><div className="sub">{L('这是读权限唯一会动到磁盘的工具：只新建文件，重名自动加序号，绝不覆盖，也不弹资源管理器', 'The only read tool that touches disk: it creates new files, adds a number on name clashes, never overwrites and never opens Explorer')}</div></div>
           </div>
         </div>
       </section>

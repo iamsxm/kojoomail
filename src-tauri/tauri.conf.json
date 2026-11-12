@@ -29,6 +29,9 @@
     ],
     "shortDescription": "Kojoo Mail",
     "longDescription": "多邮箱 + AI 的桌面邮件客户端",
+    "externalBin": [
+      "binaries/kojoomail-mcp"
+    ],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

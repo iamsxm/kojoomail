@@ -171,6 +171,10 @@ impl Store {
         add_column(&conn, "accounts", "ai_level", "TEXT NOT NULL DEFAULT 'full'")?;
         // 待跟进：用户点了「不用跟进」的已发送邮件；两个索引给「对方回了没有」查询用
         add_column(&conn, "messages", "followup_off", "INTEGER NOT NULL DEFAULT 0")?;
+        // MCP 每账号授权：读默认开（开 MCP 就是为了读），写和发必须逐个账号显式打开
+        add_column(&conn, "accounts", "mcp_read", "INTEGER NOT NULL DEFAULT 1")?;
+        add_column(&conn, "accounts", "mcp_write", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column(&conn, "accounts", "mcp_send", "INTEGER NOT NULL DEFAULT 0")?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_irt ON messages(in_reply_to) WHERE in_reply_to != ''", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_acc_from ON messages(account_id, lower(from_addr), date)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_placeholder ON messages(folder_id, msgid) WHERE uid < 0", [])?;
@@ -363,6 +367,29 @@ mod migrate_tests {
         }
         let st = Store::open(&d).unwrap();
         st.conn.query_row("SELECT auth, focus, ai_level FROM accounts LIMIT 1", [], |_| Ok(())).optional().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 老账号升级后：读默认开，写和发默认关，必须逐账号显式授权
+    #[test]
+    fn existing_accounts_get_read_only_mcp_defaults() {
+        let d = tmp("mcpcols");
+        std::fs::create_dir_all(&d).unwrap();
+        {
+            let c = Connection::open(d.join("kojoomail.db")).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            c.execute(
+                "INSERT INTO accounts (id, email, username, imap_host, imap_port, smtp_host, smtp_port, created) VALUES (1, 'old@example.com', 'old@example.com', 'h', 993, 'h', 465, 0)",
+                [],
+            ).unwrap();
+        }
+        let st = Store::open(&d).unwrap();
+        let (r, w, s): (i64, i64, i64) = st
+            .conn
+            .query_row("SELECT mcp_read, mcp_write, mcp_send FROM accounts WHERE id = 1", [], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?)))
+            .unwrap();
+        assert_eq!((r, w, s), (1, 0, 0));
+        drop(st);
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -45,6 +45,10 @@ pub struct AccountOut {
     focus: Vec<String>,
     /// full | classify
     ai_level: String,
+    /// MCP：本账号是否允许 agent 读 / 改邮箱状态 / 发信
+    mcp_read: bool,
+    mcp_write: bool,
+    mcp_send: bool,
 }
 
 /// AI 分类名（和 ai.rs 的提示词一致）；常用分类只能从这里选
@@ -170,11 +174,11 @@ fn todo_row(r: &rusqlite::Row) -> rusqlite::Result<TodoOut> {
 }
 const TODO_COLS: &str = "id, msg_id, account_id, text, due, priority, done, done_at, source, src_subject, src_from, created";
 
-fn accounts(ctx: &Ctx) -> Res<Vec<AccountOut>> {
+pub(crate) fn accounts(ctx: &Ctx) -> Res<Vec<AccountOut>> {
     let st = ctx.store.lock().unwrap();
     let mut q = st
         .conn
-        .prepare("SELECT id, email, display_name, label, color, provider, imap_host, imap_port, smtp_host, smtp_port, smtp_tls, save_sent, ai_allowed, signature, auth, focus, ai_level FROM accounts ORDER BY sort, id")
+        .prepare("SELECT id, email, display_name, label, color, provider, imap_host, imap_port, smtp_host, smtp_port, smtp_tls, save_sent, ai_allowed, signature, auth, focus, ai_level, mcp_read, mcp_write, mcp_send FROM accounts ORDER BY sort, id")
         .map_err(e)?;
     let v = q
         .query_map([], |r| {
@@ -196,6 +200,9 @@ fn accounts(ctx: &Ctx) -> Res<Vec<AccountOut>> {
                 auth: r.get(14)?,
                 focus: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
                 ai_level: r.get(16)?,
+                mcp_read: r.get(17)?,
+                mcp_write: r.get(18)?,
+                mcp_send: r.get(19)?,
             })
         })
         .map_err(e)?
@@ -204,7 +211,7 @@ fn accounts(ctx: &Ctx) -> Res<Vec<AccountOut>> {
     Ok(v)
 }
 
-fn folders(ctx: &Ctx) -> Res<Vec<FolderOut>> {
+pub(crate) fn folders(ctx: &Ctx) -> Res<Vec<FolderOut>> {
     let st = ctx.store.lock().unwrap();
     let mut q = st
         .conn
@@ -298,17 +305,20 @@ pub async fn get_folders(ctx: State<'_, Arc<Ctx>>) -> Res<Vec<FolderOut>> {
 #[serde(rename_all = "camelCase")]
 pub struct ListQuery {
     /// all | important | later | sent | folder
-    view: String,
-    account_id: Option<i64>,
-    folder_id: Option<i64>,
+    pub(crate) view: String,
+    pub(crate) account_id: Option<i64>,
+    pub(crate) folder_id: Option<i64>,
     /// all | unread | inquiry | todo
-    filter: Option<String>,
-    search: Option<String>,
+    pub(crate) filter: Option<String>,
+    pub(crate) search: Option<String>,
     /// 一键已读：只动这个 id 及以前的（列表画出来之后才到的新信不动）
     #[serde(default)]
-    max_id: Option<i64>,
-    offset: i64,
-    limit: i64,
+    pub(crate) max_id: Option<i64>,
+    pub(crate) offset: i64,
+    pub(crate) limit: i64,
+    /// MCP 专用的账号白名单。前端传的对象没有这个键，永远是 None，行为不变
+    #[serde(skip)]
+    pub(crate) allow_accounts: Option<Vec<i64>>,
 }
 
 #[derive(Serialize)]
@@ -319,10 +329,15 @@ pub struct ListOut {
 
 #[tauri::command]
 pub async fn list_messages(ctx: State<'_, Arc<Ctx>>, q: ListQuery) -> Res<ListOut> {
+    list_messages_inner(&ctx, q)
+}
+
+pub(crate) fn list_messages_inner(ctx: &Ctx, q: ListQuery) -> Res<ListOut> {
     let (base, args) = list_base(&q);
-    let local_all = bulk_local_all(&ctx);
+    let local_all = bulk_local_all(ctx);
     let st = ctx.store.lock().unwrap();
-    if matches!(q.filter.as_deref(), Some("cat:通知" | "cat:订阅" | "bulk")) {
+    // MCP 只读：不在读路径上写库
+    if q.allow_accounts.is_none() && matches!(q.filter.as_deref(), Some("cat:通知" | "cat:订阅" | "bulk")) {
         backfill_bulk(&st, local_all)?;
     }
     let total: i64 = st.conn.query_row(&format!("SELECT COUNT(*) {base}"), params_from_iter(args.iter()), |r| r.get(0)).map_err(e)?;
@@ -383,6 +398,17 @@ pub async fn category_counts(ctx: State<'_, Arc<Ctx>>, q: ListQuery) -> Res<Vec<
     Ok(v)
 }
 
+fn search_tokens(s: &str) -> Vec<String> {
+    s.split_whitespace().map(|x| x.replace('"', "")).filter(|x| !x.is_empty()).collect()
+}
+
+/// 全文索引的 trigram 分词要求每个词至少 3 个字，两个字的中文词（发票、报价、合同）
+/// 只能退化成 LIKE，而 LIKE 不查正文。MCP 要把这个降级如实告诉 agent。
+pub(crate) fn search_mode(s: &str) -> &'static str {
+    let toks = search_tokens(s);
+    if !toks.is_empty() && toks.iter().all(|t| t.chars().count() >= 3) { "fts" } else { "like" }
+}
+
 /// 列表的 FROM … WHERE …（和参数）
 fn list_base(q: &ListQuery) -> (String, Vec<rusqlite::types::Value>) {
     let mut wh: Vec<String> = vec!["m.moving = 0".into()];
@@ -391,8 +417,8 @@ fn list_base(q: &ListQuery) -> (String, Vec<rusqlite::types::Value>) {
     let search = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty());
     if let Some(s) = search {
         wh.push("f.role NOT IN ('trash')".into());
-        let toks: Vec<String> = s.split_whitespace().map(|x| x.replace('"', "")).filter(|x| !x.is_empty()).collect();
-        if !toks.is_empty() && toks.iter().all(|t| t.chars().count() >= 3) {
+        let toks = search_tokens(s);
+        if search_mode(s) == "fts" {
             let m = toks.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(" AND ");
             wh.push("m.id IN (SELECT rowid FROM msg_fts WHERE msg_fts MATCH ?)".into());
             args.push(m.into());
@@ -423,6 +449,15 @@ fn list_base(q: &ListQuery) -> (String, Vec<rusqlite::types::Value>) {
     if let Some(a) = q.account_id {
         wh.push("m.account_id = ?".into());
         args.push(a.into());
+    }
+    // MCP 账号白名单：和上面的 account_id 是 AND，显式传不可读账号时 total 直接是 0
+    if let Some(ids) = &q.allow_accounts {
+        if ids.is_empty() {
+            wh.push("0".into());
+        } else {
+            wh.push("m.account_id IN (SELECT value FROM json_each(?))".into());
+            args.push(serde_json::to_string(ids).unwrap_or_else(|_| "[]".into()).into());
+        }
     }
     match q.filter.as_deref() {
         Some("unread") => wh.push("m.seen = 0".into()),
@@ -494,8 +529,8 @@ fn worker_send(ctx: &Ctx, account_id: i64, op: Op) {
     }
 }
 
-#[tauri::command]
-pub async fn get_message(ctx: State<'_, Arc<Ctx>>, id: i64) -> Res<MsgFull> {
+/// 正文没下载就拉一次。调用方必须先判过权限，否则会替不可读的账号触发 IMAP 下载
+pub(crate) async fn ensure_body(ctx: &Ctx, id: i64) -> Res<()> {
     let (has_body, account_id, path, uid): (bool, i64, String, u32) = {
         let st = ctx.store.lock().unwrap();
         st.conn
@@ -504,14 +539,19 @@ pub async fn get_message(ctx: State<'_, Arc<Ctx>>, id: i64) -> Res<MsgFull> {
     };
     if !has_body {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        worker_send(&ctx, account_id, Op::Body { msg_id: id, path, uid, reply: tx });
+        worker_send(ctx, account_id, Op::Body { msg_id: id, path, uid, reply: tx });
         match tokio::time::timeout(Duration::from_secs(45), rx).await {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(m))) => return Err(m),
             _ => return Err(crate::i18n::t("下载邮件超时，请检查网络后重试", "Downloading the email timed out. Check your connection and try again.").into()),
         }
     }
-    let st = ctx.store.lock().unwrap();
+    Ok(())
+}
+
+/// 只读库：不联网、不派 AI 任务。inline_images=false 时不把内嵌图转成 data: URI
+/// （一封营销邮件能产出几 MB 字符串，会撑爆 agent 的上下文）
+pub(crate) fn read_full(st: &crate::store::Store, id: i64, inline_images: bool) -> Res<MsgFull> {
     let mut full = st
         .conn
         .query_row(
@@ -539,7 +579,7 @@ pub async fn get_message(ctx: State<'_, Arc<Ctx>>, id: i64) -> Res<MsgFull> {
         )
         .map_err(e)?;
     // 内嵌图片 cid: → data:
-    if full.html.contains("cid:") {
+    if inline_images && full.html.contains("cid:") {
         if let Ok(raw) = std::fs::read(st.eml_path(id)) {
             for (cid, data) in mime::inline_images(&raw) {
                 full.html = full.html.replace(&format!("cid:{cid}"), &data);
@@ -568,8 +608,16 @@ pub async fn get_message(ctx: State<'_, Arc<Ctx>>, id: i64) -> Res<MsgFull> {
         .map_err(e)?;
     let mut q = st.conn.prepare(&format!("SELECT {TODO_COLS} FROM todos WHERE msg_id=? ORDER BY done, id")).map_err(e)?;
     full.todos = q.query_map([id], todo_row).map_err(e)?.filter_map(|x| x.ok()).collect();
-    drop(q);
-    drop(st);
+    Ok(full)
+}
+
+#[tauri::command]
+pub async fn get_message(ctx: State<'_, Arc<Ctx>>, id: i64) -> Res<MsgFull> {
+    ensure_body(&ctx, id).await?;
+    let mut full = {
+        let st = ctx.store.lock().unwrap();
+        read_full(&st, id, true)?
+    };
     if full.ai.is_none() && ai::should_auto(&ctx, id) {
         full.ai_pending = true;
         let _ = ctx.ai_tx.send(ai::Job::Open(id));
@@ -1043,6 +1091,9 @@ pub struct AccountPatch {
     oauth_ticket: Option<String>,
     focus: Option<Vec<String>>,
     ai_level: Option<String>,
+    mcp_read: Option<bool>,
+    mcp_write: Option<bool>,
+    mcp_send: Option<bool>,
 }
 
 #[tauri::command]
@@ -1112,6 +1163,21 @@ pub async fn update_account(ctx: State<'_, Arc<Ctx>>, id: i64, patch: AccountPat
             return Err(crate::i18n::t("AI 处理方式不对", "Invalid AI mode").into());
         }
         st.conn.execute("UPDATE accounts SET ai_level=? WHERE id=?", params![v, id]).map_err(e)?;
+    }
+    let mcp_touched = patch.mcp_read.is_some() || patch.mcp_write.is_some() || patch.mcp_send.is_some();
+    if let Some(v) = patch.mcp_read {
+        st.conn.execute("UPDATE accounts SET mcp_read=? WHERE id=?", params![v, id]).map_err(e)?;
+    }
+    if let Some(v) = patch.mcp_write {
+        st.conn.execute("UPDATE accounts SET mcp_write=? WHERE id=?", params![v, id]).map_err(e)?;
+    }
+    if let Some(v) = patch.mcp_send {
+        st.conn.execute("UPDATE accounts SET mcp_send=? WHERE id=?", params![v, id]).map_err(e)?;
+    }
+    drop(st);
+    // refresh 自己也要拿 store 锁，必须在 drop 之后
+    if mcp_touched {
+        crate::mcp::refresh(ctx.inner());
     }
     Ok(())
 }
@@ -1411,13 +1477,22 @@ pub async fn delete_draft(ctx: State<'_, Arc<Ctx>>, id: i64) -> Res<()> {
 /// 收件人自动补全：最近来往过的人
 #[tauri::command]
 pub async fn contacts(ctx: State<'_, Arc<Ctx>>, q: String) -> Res<Vec<Addr>> {
+    contacts_in(&ctx, &q, &crate::mcp_scope::Scope::unrestricted(), 8)
+}
+
+pub(crate) fn contacts_in(ctx: &Ctx, q: &str, allow: &crate::mcp_scope::Scope, limit: i64) -> Res<Vec<Addr>> {
     let st = ctx.store.lock().unwrap();
     let p = format!("%{}%", q.trim());
+    let (frag, arg) = allow.frag("account_id");
+    let cond = if frag.is_empty() { String::new() } else { format!(" AND {frag}") };
     let mut stmt = st
         .conn
-        .prepare("SELECT from_name, from_addr, MAX(date) d FROM messages WHERE from_addr != '' AND bulk = 0 AND (from_addr LIKE ? OR from_name LIKE ?) GROUP BY lower(from_addr) ORDER BY d DESC LIMIT 8")
+        .prepare(&format!("SELECT from_name, from_addr, MAX(date) d FROM messages WHERE from_addr != '' AND bulk = 0 AND (from_addr LIKE ? OR from_name LIKE ?){cond} GROUP BY lower(from_addr) ORDER BY d DESC LIMIT ?"))
         .map_err(e)?;
-    let v = stmt.query_map(params![p, p], |r| Ok(Addr { name: r.get(0)?, email: r.get(1)? })).map_err(e)?.filter_map(|x| x.ok()).collect();
+    let mut args: Vec<rusqlite::types::Value> = vec![p.clone().into(), p.into()];
+    args.extend(arg);
+    args.push(limit.clamp(1, 100).into());
+    let v = stmt.query_map(params_from_iter(args.iter()), |r| Ok(Addr { name: r.get(0)?, email: r.get(1)? })).map_err(e)?.filter_map(|x| x.ok()).collect();
     Ok(v)
 }
 
@@ -1425,11 +1500,15 @@ pub async fn contacts(ctx: State<'_, Arc<Ctx>>, q: String) -> Res<Vec<Addr>> {
 
 #[tauri::command]
 pub async fn save_attachment(ctx: State<'_, Arc<Ctx>>, msg_id: i64, idx: usize) -> Res<String> {
+    save_attachment_in(&ctx, msg_id, idx, true)
+}
+
+/// reveal=false 给 MCP 用：批量存附件不该弹出几十个资源管理器窗口
+pub(crate) fn save_attachment_in(ctx: &Ctx, msg_id: i64, idx: usize, reveal: bool) -> Res<String> {
     let path = ctx.store.lock().unwrap().eml_path(msg_id);
     let raw = std::fs::read(&path).map_err(|_| crate::i18n::t("邮件原文还没下载", "The original email hasn't been downloaded yet").to_string())?;
     let (name, data) = mime::attachment_bytes(&raw, idx).ok_or(crate::i18n::t("找不到这个附件", "Attachment not found"))?;
-    let safe: String = name.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) || c.is_control() { '_' } else { c }).collect();
-    let p = save_to_downloads(&safe, &data)?;
+    let p = save_to_downloads(&crate::mcp_scope::safe_file_name(&name), &data, reveal)?;
     mark_from_internet(std::path::Path::new(&p));
     Ok(p)
 }
@@ -1479,8 +1558,8 @@ fn mark_from_internet(p: &std::path::Path) {
     crate::os::mark_from_internet(p)
 }
 
-/// 存进「下载」文件夹（重名加序号），并在资源管理器里选中；返回实际路径
-fn save_to_downloads(name: &str, data: &[u8]) -> Res<String> {
+/// 存进「下载」文件夹（重名加序号，永不覆盖）；reveal 时在资源管理器里选中。返回实际路径
+fn save_to_downloads(name: &str, data: &[u8], reveal: bool) -> Res<String> {
     let dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
     let mut target = dir.join(name);
     let mut n = 2;
@@ -1492,7 +1571,9 @@ fn save_to_downloads(name: &str, data: &[u8]) -> Res<String> {
         n += 1;
     }
     std::fs::write(&target, data).map_err(e)?;
-    crate::os::reveal(&target);
+    if reveal {
+        crate::os::reveal(&target);
+    }
     Ok(target.to_string_lossy().into_owned())
 }
 
@@ -1522,17 +1603,31 @@ pub async fn open_url(url: String) -> Res<()> {
 
 #[tauri::command]
 pub async fn list_todos(ctx: State<'_, Arc<Ctx>>, filter: String) -> Res<Vec<TodoOut>> {
+    list_todos_in(&ctx, &filter, &crate::mcp_scope::Scope::unrestricted())
+}
+
+pub(crate) fn list_todos_in(ctx: &Ctx, filter: &str, allow: &crate::mcp_scope::Scope) -> Res<Vec<TodoOut>> {
     let st = ctx.store.lock().unwrap();
     let end_today = chrono::Local::now().date_naive().and_hms_opt(23, 59, 59).and_then(|d| d.and_local_timezone(chrono::Local).single()).map(|d| d.timestamp()).unwrap_or(0);
     let end_week = end_today + 6 * 86400;
-    let wh = match filter.as_str() {
+    let wh = match filter {
         "today" => format!("done=0 AND due IS NOT NULL AND due <= {end_today}"),
         "week" => format!("done=0 AND due IS NOT NULL AND due <= {end_week}"),
         "done" => format!("done=1 AND done_at > {}", now() - 30 * 86400),
         _ => format!("done=0 OR (done=1 AND done_at > {})", now() - 86400),
     };
-    let mut q = st.conn.prepare(&format!("SELECT {TODO_COLS} FROM todos WHERE {wh} ORDER BY done, CASE WHEN due IS NULL THEN 1 ELSE 0 END, due, id DESC LIMIT 500")).map_err(e)?;
-    let v = q.query_map([], todo_row).map_err(e)?.filter_map(|x| x.ok()).collect();
+    // 待办自己的 account_id 可能为空，来源邮件所属账号也必须是可读的
+    let (f1, a1) = allow.frag("account_id");
+    let mut extra = String::new();
+    let mut args: Vec<rusqlite::types::Value> = vec![];
+    if !f1.is_empty() {
+        let (f2, a2) = allow.frag("account_id");
+        extra = format!(" AND {f1} AND (msg_id IS NULL OR msg_id IN (SELECT id FROM messages WHERE {f2}))");
+        args.extend(a1);
+        args.extend(a2);
+    }
+    let mut q = st.conn.prepare(&format!("SELECT {TODO_COLS} FROM todos WHERE ({wh}){extra} ORDER BY done, CASE WHEN due IS NULL THEN 1 ELSE 0 END, due, id DESC LIMIT 500")).map_err(e)?;
+    let v = q.query_map(params_from_iter(args.iter()), todo_row).map_err(e)?.filter_map(|x| x.ok()).collect();
     Ok(v)
 }
 
@@ -1786,7 +1881,31 @@ pub async fn save_settings(app: tauri::AppHandle, ctx: State<'_, Arc<Ctx>>, s: S
         let r = if s.autostart { al.enable() } else { al.disable() };
         r.map_err(|x| format!("{}{x}", crate::i18n::t("开机启动设置失败：", "Couldn't change start-at-login: ")))?;
     }
-    Ok(settings::load(&ctx))
+    let saved = settings::load(&ctx);
+    if old.mcp_enabled != saved.mcp_enabled
+        || old.mcp_port != saved.mcp_port
+        || old.mcp_read != saved.mcp_read
+        || old.mcp_write != saved.mcp_write
+        || old.mcp_send != saved.mcp_send
+        || old.mcp_send_mode != saved.mcp_send_mode
+        || old.mcp_allow_ai != saved.mcp_allow_ai
+    {
+        crate::mcp::refresh(ctx.inner());
+    }
+    Ok(saved)
+}
+
+/// 设置页展示 MCP 连接信息（地址、token、stdio 代理路径）
+#[tauri::command]
+pub async fn mcp_config() -> Res<serde_json::Value> {
+    Ok(crate::mcp::info())
+}
+
+/// 换 token：已配置的 agent 会全部失效，需要重新复制配置
+#[tauri::command]
+pub async fn mcp_regenerate_token() -> Res<serde_json::Value> {
+    crate::mcp::regenerate_token().map_err(e)?;
+    Ok(crate::mcp::info())
 }
 
 #[tauri::command]
@@ -1874,7 +1993,7 @@ pub async fn export_diagnostics(ctx: State<'_, Arc<Ctx>>) -> Res<String> {
     // 邮箱地址只留前两个字符
     let re = regex::Regex::new(r"([A-Za-z0-9._%+-]{1,2})[A-Za-z0-9._%+-]*@").unwrap();
     let out = re.replace_all(&out, "$1***@").into_owned();
-    save_to_downloads(&format!("KojooMail-{}-{}.txt", crate::i18n::t("诊断", "diagnostics"), chrono::Local::now().format("%Y%m%d-%H%M%S")), out.as_bytes())
+    save_to_downloads(&format!("KojooMail-{}-{}.txt", crate::i18n::t("诊断", "diagnostics"), chrono::Local::now().format("%Y%m%d-%H%M%S")), out.as_bytes(), true)
 }
 
 #[tauri::command]
@@ -1900,4 +2019,125 @@ pub async fn show_main(app: tauri::AppHandle, boot: Option<bool>) -> Res<()> {
     }
     crate::show_main(&app);
     Ok(())
+}
+
+#[cfg(test)]
+mod mcp_scope_tests {
+    use super::*;
+    use crate::mcp_scope::Scope;
+    use crate::store::Store;
+
+    /// 两个账号各一个收件箱、各 3 封未读；账号 2 是不可读的那个
+    fn two_accounts(name: &str) -> (std::path::PathBuf, Store) {
+        let d = std::env::temp_dir().join(format!("kjm-mcp-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let st = Store::open(&d).unwrap();
+        for a in [1, 2] {
+            st.conn
+                .execute(
+                    "INSERT INTO accounts (id, email, username, imap_host, imap_port, smtp_host, smtp_port, created) VALUES (?1, ?2, ?2, 'h', 993, 'h', 465, 0)",
+                    params![a, format!("a{a}@example.com")],
+                )
+                .unwrap();
+            st.conn
+                .execute("INSERT INTO folders (id, account_id, path, name, role) VALUES (?1, ?1, 'INBOX', 'Inbox', 'inbox')", [a])
+                .unwrap();
+            for n in 0..3 {
+                st.conn
+                    .execute(
+                        "INSERT INTO messages (account_id, folder_id, uid, subject, date, seen) VALUES (?1, ?1, ?2, ?3, ?4, 0)",
+                        params![a, n + 1, format!("mail {a}-{n}"), 1_700_000_000 + n],
+                    )
+                    .unwrap();
+            }
+        }
+        (d, st)
+    }
+
+    fn q(scope: Scope) -> ListQuery {
+        ListQuery {
+            view: "all".into(),
+            account_id: None,
+            folder_id: None,
+            filter: None,
+            search: None,
+            max_id: None,
+            offset: 0,
+            limit: 100,
+            allow_accounts: scope.0,
+        }
+    }
+
+    fn count(st: &Store, q: &ListQuery) -> i64 {
+        let (base, args) = list_base(q);
+        st.conn.query_row(&format!("SELECT COUNT(*) {base}"), params_from_iter(args.iter()), |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn whitelist_shrinks_the_total_and_empty_one_zeroes_it() {
+        let (d, st) = two_accounts("filter");
+        assert_eq!(count(&st, &q(Scope::unrestricted())), 6);
+        assert_eq!(count(&st, &q(Scope(Some(vec![1])))), 3);
+        assert_eq!(count(&st, &q(Scope(Some(vec![])))), 0);
+        drop(st);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 显式点名不可读的账号时，结果必须和「这个账号没有邮件」一模一样：total=0，不是报错
+    #[test]
+    fn asking_for_a_hidden_account_looks_like_an_empty_one() {
+        let (d, st) = two_accounts("hidden");
+        let mut query = q(Scope(Some(vec![1])));
+        query.account_id = Some(2);
+        assert_eq!(count(&st, &query), 0);
+        // 对照：真的空账号也是 0
+        let mut empty = q(Scope::unrestricted());
+        empty.account_id = Some(999);
+        assert_eq!(count(&st, &empty), 0);
+        drop(st);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 最隐蔽的越权写路径：一键已读复用 list_base，白名单必须同样生效
+    #[test]
+    fn mark_view_read_cannot_touch_a_hidden_account() {
+        let (d, st) = two_accounts("markview");
+        let query = q(Scope(Some(vec![1])));
+        let (base, mut args) = list_base(&query);
+        args.push(i64::MAX.into());
+        let ids: Vec<i64> = st
+            .conn
+            .prepare(&format!("SELECT m.id {base} AND m.seen = 0 AND f.role != 'drafts' AND m.id <= ?"))
+            .unwrap()
+            .query_map(params_from_iter(args.iter()), |r| r.get(0))
+            .unwrap()
+            .filter_map(|x| x.ok())
+            .collect();
+        assert_eq!(ids.len(), 3);
+        for id in &ids {
+            st.conn.execute("UPDATE messages SET seen = 1 WHERE id = ?", [id]).unwrap();
+        }
+        let still_unread: i64 = st.conn.query_row("SELECT COUNT(*) FROM messages WHERE account_id = 2 AND seen = 0", [], |r| r.get(0)).unwrap();
+        assert_eq!(still_unread, 3, "不可读账号的已读状态被改了");
+        drop(st);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 前端传的对象没有 allowAccounts 这个键，反序列化后必须是 None，行为逐字不变
+    #[test]
+    fn frontend_payload_never_carries_a_whitelist() {
+        let q: ListQuery = serde_json::from_str(r#"{"view":"all","offset":0,"limit":50,"allowAccounts":[1]}"#).unwrap();
+        assert!(q.allow_accounts.is_none());
+    }
+
+    #[test]
+    fn short_chinese_words_report_the_like_fallback() {
+        for s in ["发票", "报价", "合同", "invoice 发票"] {
+            assert_eq!(search_mode(s), "like", "{s}");
+        }
+        for s in ["invoice", "发票单", "订单号 快递单"] {
+            assert_eq!(search_mode(s), "fts", "{s}");
+        }
+        assert_eq!(search_mode("   "), "like");
+    }
 }

@@ -13,6 +13,8 @@ export type Account = {
   focus: string[]
   /** full：完整批注；classify：只分类 */
   aiLevel: 'full' | 'classify'
+  /** MCP：本账号是否允许 agent 读 / 改邮箱状态 / 发信 */
+  mcpRead: boolean; mcpWrite: boolean; mcpSend: boolean
 }
 
 /** 可以选作常用分类的 AI 类别（「其他」不当页签） */
@@ -28,7 +30,20 @@ export type Settings = {
   remoteImages: 'ask' | 'always'; undoSendSecs: number
   notifyPreview: boolean; aiProvider: string; aiBase: string; aiModel: string; aiModelFine: string; aiModelBackup: string; aiAuto: boolean; aiScope: 'skip_bulk' | 'all' | 'important'; aiDailyLimit: number
   language: 'auto' | 'zh' | 'en'
+  /** MCP 总开关：关着的时候连端口都不监听 */
+  mcpEnabled: boolean
+  /** 全局三轴：读邮件 / 改邮箱状态 / 发信 */
+  mcpRead: boolean; mcpWrite: boolean; mcpSend: boolean
+  /** draft：只存草稿；confirm：每次弹桌面确认。没有无人值守直发 */
+  mcpSendMode: 'draft' | 'confirm'
+  /** 0＝随机端口 */
+  mcpPort: number
+  mcpBodyMaxChars: number
+  /** 允许 MCP 调用会烧 AI 额度的工具 */
+  mcpAllowAi: boolean
 }
+/** 设置页展示用的连接信息；没开启时 port/url 为 null */
+export type McpInfo = { running: boolean; port: number | null; url: string | null; token: string | null; proxyPath: string | null }
 export type Counts = { inboxUnread: number; important: number; todos: number; later: number; drafts: number; bills: number; followups: number }
 export type CatCount = { cat: string; total: number; unread: number }
 export type Boot = { accounts: Account[]; folders: Folder[]; settings: Settings; status: Status[]; aiConfigured: boolean; aiUsedToday: number; counts: Counts; version: string; oauth: string[]; lang: 'zh' | 'en' }
@@ -87,7 +102,7 @@ export const api = {
   syncNow: () => call<void>('sync_now'),
   testAccount: (input: AccountIn) => call<void>('test_account', { input }),
   addAccount: (input: AccountIn) => call<number>('add_account', { input }),
-  updateAccount: (id: number, patch: Partial<{ displayName: string; label: string; color: string; signature: string; aiAllowed: boolean; password: string; oauthTicket: string; focus: string[]; aiLevel: 'full' | 'classify' }>) => call<void>('update_account', { id, patch }),
+  updateAccount: (id: number, patch: Partial<{ displayName: string; label: string; color: string; signature: string; aiAllowed: boolean; password: string; oauthTicket: string; focus: string[]; aiLevel: 'full' | 'classify'; mcpRead: boolean; mcpWrite: boolean; mcpSend: boolean }>) => call<void>('update_account', { id, patch }),
   /** 打开浏览器一键登录，完成后返回票据和登录的邮箱 */
   oauthLogin: (provider: string, hint?: string) => call<{ ticket: string; email: string }>('oauth_login', { provider, hint: hint ?? null }),
   oauthCancel: () => call<void>('oauth_cancel'),
@@ -115,6 +130,9 @@ export const api = {
   /** 翻译邮件正文：items 是正文里取出的文字段，按原顺序返回译文（后端按邮件+语言缓存） */
   aiTranslate: (id: number, lang: string, items: string[]) => call<string[]>('ai_translate', { id, lang, items }),
   saveSettings: (s: Settings) => call<Settings>('save_settings', { s }),
+  mcpConfig: () => call<McpInfo>('mcp_config'),
+  /** 换 token：已配置的 agent 全部失效，要重新复制配置 */
+  mcpRegenerateToken: () => call<McpInfo>('mcp_regenerate_token'),
   /** 当前界面语言（「跟随系统」由后端按系统语言定） */
   uiLang: () => call<'zh' | 'en'>('ui_lang'),
   setAiKey: (key: string) => call<boolean>('set_ai_key', { key }),

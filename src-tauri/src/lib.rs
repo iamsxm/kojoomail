@@ -12,6 +12,9 @@ mod commands;
 mod graph;
 mod i18n;
 mod mailbox;
+mod mcp;
+mod mcp_scope;
+mod mcp_tools;
 mod mime;
 mod net;
 mod oauth;
@@ -114,7 +117,7 @@ pub fn show_main(app: &tauri::AppHandle) {
 }
 
 /// 数据目录：测试时用 KOJOOMAIL_DATA 指定独立目录，不碰正式数据
-fn data_dir() -> std::path::PathBuf {
+pub(crate) fn data_dir() -> std::path::PathBuf {
     std::env::var_os("KOJOOMAIL_DATA").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("KojooMail"))
 }
 
@@ -320,6 +323,8 @@ pub fn run() {
                     }
                 });
             }
+            // MCP 默认关闭；关着的时候 refresh 什么都不做，连端口都不 bind
+            mcp::refresh(&ctx);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -382,6 +387,8 @@ pub fn run() {
             commands::ai_rewrite,
             commands::ai_translate,
             commands::save_settings,
+            commands::mcp_config,
+            commands::mcp_regenerate_token,
             commands::set_ai_key,
             commands::ai_test,
             commands::ai_models,
@@ -397,6 +404,10 @@ pub fn run() {
         .build(tauri::generate_context!());
     match r {
         Ok(app) => app.run(|_h, _ev| {
+            // 退出时释放端口、删掉发现文件，免得代理连到一个已经没了的进程
+            if matches!(_ev, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+                mcp::stop();
+            }
             // macOS：点 Dock 图标时，关窗口缩到后台的主窗口要重新显示
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _ev {
