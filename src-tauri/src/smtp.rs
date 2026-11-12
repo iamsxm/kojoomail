@@ -261,4 +261,43 @@ mod tests {
         assert!(!smtp.contains("hidden@example.com"));
         assert!(graph.contains("Bcc: <hidden@example.com>") || graph.contains("Bcc: hidden@example.com"), "{graph}");
     }
+
+    /// 回复的 threading 头。send_mail_inner 用 `format!("{refs} {mid}")` 拼 References，
+    /// 转发时两个都留空——这里按同样的输入验 MIME 里真的带上了，且尖括号不重复
+    #[test]
+    fn reply_carries_threading_headers_and_forward_does_not() {
+        let a = |e: &str| Addr { name: String::new(), email: e.into() };
+        let mut o = Outgoing {
+            from: a("me@example.com"),
+            to: vec![a("them@vendor.com")],
+            cc: vec![],
+            bcc: vec![],
+            subject: "Re: 询价".into(),
+            text: "报价如下".into(),
+            html: String::new(),
+            in_reply_to: "<m1@vendor.com>".into(),
+            references: "<m0@vendor.com> <m1@vendor.com>".into(),
+            attachments: vec![],
+        };
+        let reply = String::from_utf8(build(&o, "example.com", false).unwrap()).unwrap();
+        let header = |name: &str| {
+            reply
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with(&format!("{name}:")))
+                .unwrap_or_else(|| panic!("没有 {name} 头：\n{reply}"))
+                .to_string()
+        };
+        let irt = header("in-reply-to");
+        assert!(irt.contains("m1@vendor.com"), "{irt}");
+        assert!(!irt.contains("<<") && !irt.contains(">>"), "{irt}");
+        let refs = header("references");
+        assert!(refs.find("m0@vendor.com").unwrap() < refs.find("m1@vendor.com").unwrap(), "{refs}");
+        assert!(!refs.contains("<<") && !refs.contains(">>"), "{refs}");
+
+        o.in_reply_to = String::new();
+        o.references = String::new();
+        let fwd = String::from_utf8(build(&o, "example.com", false).unwrap()).unwrap();
+        assert!(!fwd.to_ascii_lowercase().contains("in-reply-to:"), "{fwd}");
+        assert!(!fwd.to_ascii_lowercase().contains("references:"), "{fwd}");
+    }
 }

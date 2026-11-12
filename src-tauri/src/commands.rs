@@ -670,7 +670,7 @@ pub async fn mark(ctx: State<'_, Arc<Ctx>>, ids: Vec<i64>, seen: Option<bool>, f
     mark_inner(&ctx, &ids, seen, flagged)
 }
 
-fn mark_inner(ctx: &Ctx, ids: &[i64], seen: Option<bool>, flagged: Option<bool>) -> Res<()> {
+pub(crate) fn mark_inner(ctx: &Ctx, ids: &[i64], seen: Option<bool>, flagged: Option<bool>) -> Res<()> {
     if ids.is_empty() {
         return Ok(());
     }
@@ -714,18 +714,26 @@ fn mark_inner(ctx: &Ctx, ids: &[i64], seen: Option<bool>, flagged: Option<bool>)
 
 #[tauri::command]
 pub async fn snooze(ctx: State<'_, Arc<Ctx>>, ids: Vec<i64>, until: Option<i64>) -> Res<()> {
+    snooze_inner(&ctx, &ids, until)
+}
+
+pub(crate) fn snooze_inner(ctx: &Ctx, ids: &[i64], until: Option<i64>) -> Res<()> {
     let st = ctx.store.lock().unwrap();
-    for id in &ids {
+    for id in ids {
         st.conn.execute("UPDATE messages SET later_until=? WHERE id=?", params![until, id]).map_err(e)?;
     }
     drop(st);
-    changed(&ctx);
+    changed(ctx);
     Ok(())
 }
 
 /// 移动：先在本地隐藏，5 秒内可撤销，之后才真正改服务器
 #[tauri::command]
 pub async fn move_to(ctx: State<'_, Arc<Ctx>>, ids: Vec<i64>, target: String) -> Res<u64> {
+    move_to_inner(ctx.inner().clone(), ids, target).await
+}
+
+pub(crate) async fn move_to_inner(ctx: Arc<Ctx>, ids: Vec<i64>, target: String) -> Res<u64> {
     let rows = locate(&ctx, &ids);
     if rows.is_empty() {
         return Err(crate::i18n::t("邮件还在同步中，稍后再试", "Still syncing. Try again in a moment.").into());
@@ -779,7 +787,7 @@ pub async fn move_to(ctx: State<'_, Arc<Ctx>>, ids: Vec<i64>, target: String) ->
     };
     ctx.pending_moves.lock().unwrap().insert(token, moving);
     changed(&ctx);
-    let ctx2 = ctx.inner().clone();
+    let ctx2 = ctx.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(undo_secs(&ctx2) + 1)).await;
         let Some(_) = ctx2.pending_moves.lock().unwrap().remove(&token) else { return }; // 已撤销
@@ -806,7 +814,7 @@ pub async fn move_to(ctx: State<'_, Arc<Ctx>>, ids: Vec<i64>, target: String) ->
 }
 
 /// 撤销窗口：和前端提示条显示的时间一致（设成「不等待」时也给 5 秒撤销移动）
-fn undo_secs(ctx: &Ctx) -> u64 {
+pub(crate) fn undo_secs(ctx: &Ctx) -> u64 {
     match settings::load(ctx).undo_send_secs {
         0 => 5,
         n => n as u64,
@@ -827,18 +835,22 @@ pub async fn undo_move(ctx: State<'_, Arc<Ctx>>, token: u64) -> Res<bool> {
 
 #[tauri::command]
 pub async fn delete_forever(ctx: State<'_, Arc<Ctx>>, ids: Vec<i64>) -> Res<()> {
-    let rows = locate(&ctx, &ids);
+    delete_forever_inner(&ctx, &ids)
+}
+
+pub(crate) fn delete_forever_inner(ctx: &Ctx, ids: &[i64]) -> Res<()> {
+    let rows = locate(ctx, ids);
     {
         let st = ctx.store.lock().unwrap();
-        st.delete_messages(&ids).map_err(e)?;
+        st.delete_messages(ids).map_err(e)?;
         for r in &rows {
             let _ = st.refresh_counts(r.1);
         }
     }
     for ((acc, path), uids) in group(&rows) {
-        worker_send(&ctx, acc, Op::Delete { path, uids });
+        worker_send(ctx, acc, Op::Delete { path, uids });
     }
-    changed(&ctx);
+    changed(ctx);
     Ok(())
 }
 
@@ -1234,7 +1246,7 @@ pub struct DraftIn {
 #[tauri::command]
 pub async fn send_mail(ctx: State<'_, Arc<Ctx>>, d: DraftIn) -> Res<()> {
     let what = format!("账号 {} 发信（{} 个附件）", d.account_id, d.attachments.len());
-    let r = send_mail_inner(ctx, d).await;
+    let r = send_mail_inner(ctx.inner().clone(), d).await;
     applog_result(&what, &r);
     r
 }
@@ -1242,6 +1254,10 @@ pub async fn send_mail(ctx: State<'_, Arc<Ctx>>, d: DraftIn) -> Res<()> {
 /// 点发送时先查一遍附件大小：超了马上提示，不用等撤销倒计时结束、真正发出去才报错
 #[tauri::command]
 pub async fn precheck_send(ctx: State<'_, Arc<Ctx>>, d: DraftIn) -> Res<()> {
+    precheck_send_inner(&ctx, &d)
+}
+
+pub(crate) fn precheck_send_inner(ctx: &Ctx, d: &DraftIn) -> Res<()> {
     let (provider, auth_kind): (String, String) = ctx
         .store
         .lock()
@@ -1269,7 +1285,7 @@ pub async fn precheck_send(ctx: State<'_, Arc<Ctx>>, d: DraftIn) -> Res<()> {
     Ok(())
 }
 
-async fn send_mail_inner(ctx: State<'_, Arc<Ctx>>, d: DraftIn) -> Res<()> {
+pub(crate) async fn send_mail_inner(ctx: Arc<Ctx>, d: DraftIn) -> Res<()> {
     let (email, name, user, host, port, tls, save_sent, provider, auth_kind): (String, String, String, String, u16, bool, bool, String, String) = ctx
         .store
         .lock()
@@ -1429,7 +1445,15 @@ pub struct DraftOut {
 
 #[tauri::command]
 pub async fn save_draft(ctx: State<'_, Arc<Ctx>>, d: DraftIn) -> Res<i64> {
+    save_draft_inner(&ctx, d)
+}
+
+pub(crate) fn save_draft_inner(ctx: &Ctx, d: DraftIn) -> Res<i64> {
     let st = ctx.store.lock().unwrap();
+    save_draft_in(&st, d)
+}
+
+pub(crate) fn save_draft_in(st: &crate::store::Store, d: DraftIn) -> Res<i64> {
     let j = |v: &Vec<Addr>| serde_json::to_string(v).unwrap_or_else(|_| "[]".into());
     // 附件只存本机路径（不复制文件），重新打开草稿时还在原处就能直接发
     let att = serde_json::to_string(&d.attachments).unwrap_or_else(|_| "[]".into());
@@ -1454,6 +1478,10 @@ pub async fn save_draft(ctx: State<'_, Arc<Ctx>>, d: DraftIn) -> Res<i64> {
 
 #[tauri::command]
 pub async fn list_drafts(ctx: State<'_, Arc<Ctx>>) -> Res<Vec<DraftOut>> {
+    list_drafts_inner(&ctx)
+}
+
+pub(crate) fn list_drafts_inner(ctx: &Ctx) -> Res<Vec<DraftOut>> {
     let st = ctx.store.lock().unwrap();
     let mut q = st.conn.prepare("SELECT id, account_id, to_json, cc_json, bcc_json, subject, body, reply_msg, mode, updated, att_json FROM drafts ORDER BY updated DESC").map_err(e)?;
     let v = q
@@ -1469,8 +1497,12 @@ pub async fn list_drafts(ctx: State<'_, Arc<Ctx>>) -> Res<Vec<DraftOut>> {
 
 #[tauri::command]
 pub async fn delete_draft(ctx: State<'_, Arc<Ctx>>, id: i64) -> Res<()> {
+    delete_draft_inner(&ctx, id)
+}
+
+pub(crate) fn delete_draft_inner(ctx: &Ctx, id: i64) -> Res<()> {
     ctx.store.lock().unwrap().conn.execute("DELETE FROM drafts WHERE id=?", [id]).map_err(e)?;
-    changed(&ctx);
+    changed(ctx);
     Ok(())
 }
 
@@ -1633,6 +1665,10 @@ pub(crate) fn list_todos_in(ctx: &Ctx, filter: &str, allow: &crate::mcp_scope::S
 
 #[tauri::command]
 pub async fn todo_set(ctx: State<'_, Arc<Ctx>>, id: i64, done: Option<bool>, text: Option<String>, due: Option<i64>, clear_due: Option<bool>, priority: Option<String>) -> Res<()> {
+    todo_set_inner(&ctx, id, done, text, due, clear_due, priority)
+}
+
+pub(crate) fn todo_set_inner(ctx: &Ctx, id: i64, done: Option<bool>, text: Option<String>, due: Option<i64>, clear_due: Option<bool>, priority: Option<String>) -> Res<()> {
     let st = ctx.store.lock().unwrap();
     if let Some(d) = done {
         st.conn.execute("UPDATE todos SET done=?, done_at=? WHERE id=?", params![d, if d { Some(now()) } else { None }, id]).map_err(e)?;
@@ -1650,12 +1686,18 @@ pub async fn todo_set(ctx: State<'_, Arc<Ctx>>, id: i64, done: Option<bool>, tex
         st.conn.execute("UPDATE todos SET priority=? WHERE id=?", params![p, id]).map_err(e)?;
     }
     drop(st);
-    changed(&ctx);
+    changed(ctx);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn todo_add(ctx: State<'_, Arc<Ctx>>, text: String, due: Option<i64>, msg_id: Option<i64>) -> Res<i64> {
+    todo_add_in(&ctx, text, due, msg_id, None)
+}
+
+/// `account` 只在没有来源邮件时用：MCP 建的待办必须挂在某个已授权账号下，
+/// 否则读路径按账号过滤，它自己既看不见也改不了
+pub(crate) fn todo_add_in(ctx: &Ctx, text: String, due: Option<i64>, msg_id: Option<i64>, account: Option<i64>) -> Res<i64> {
     let t = text.trim();
     if t.is_empty() {
         return Err(crate::i18n::t("待办内容不能为空", "The to-do can't be empty").into());
@@ -1663,21 +1705,25 @@ pub async fn todo_add(ctx: State<'_, Arc<Ctx>>, text: String, due: Option<i64>, 
     let st = ctx.store.lock().unwrap();
     let (acc, subj, from): (Option<i64>, String, String) = match msg_id {
         Some(m) => st.conn.query_row("SELECT account_id, subject, CASE WHEN from_name='' THEN from_addr ELSE from_name END FROM messages WHERE id=?", [m], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap_or((None, String::new(), String::new())),
-        None => (None, String::new(), String::new()),
+        None => (account, String::new(), String::new()),
     };
     st.conn
         .execute("INSERT INTO todos(msg_id, account_id, text, due, source, src_subject, src_from, created) VALUES(?,?,?,?, 'manual', ?, ?, ?)", params![msg_id, acc, t, due, subj, from, now()])
         .map_err(e)?;
     let id = st.conn.last_insert_rowid();
     drop(st);
-    changed(&ctx);
+    changed(ctx);
     Ok(id)
 }
 
 #[tauri::command]
 pub async fn todo_delete(ctx: State<'_, Arc<Ctx>>, id: i64) -> Res<()> {
+    todo_delete_inner(&ctx, id)
+}
+
+pub(crate) fn todo_delete_inner(ctx: &Ctx, id: i64) -> Res<()> {
     ctx.store.lock().unwrap().conn.execute("DELETE FROM todos WHERE id=?", [id]).map_err(e)?;
-    changed(&ctx);
+    changed(ctx);
     Ok(())
 }
 

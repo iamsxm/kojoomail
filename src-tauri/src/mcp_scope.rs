@@ -5,6 +5,7 @@
 //!
 //! 越权和「不存在」返回逐字相同的错误：返回「无权限」本身就泄露了这个账号有邮件。
 
+use crate::store::Store;
 use crate::{Ctx, settings};
 use rusqlite::OptionalExtension;
 
@@ -75,6 +76,14 @@ impl Scope {
         Scope::get(ctx, Axis::Read)
     }
 
+    pub fn write(ctx: &Ctx) -> Scope {
+        Scope::get(ctx, Axis::Write)
+    }
+
+    pub fn send(ctx: &Ctx) -> Scope {
+        Scope::get(ctx, Axis::Send)
+    }
+
     pub fn allows(&self, account_id: i64) -> bool {
         match &self.0 {
             None => true,
@@ -114,13 +123,16 @@ pub fn gone() -> String {
 /// 判权限必须在拉正文之前：否则会替不可读的账号触发 IMAP 下载
 pub fn check(ctx: &Ctx, msg_id: i64, axis: Axis) -> Result<i64, String> {
     let scope = Scope::get(ctx, axis);
-    let account = {
-        let st = ctx.store.lock().unwrap();
-        st.conn
-            .query_row("SELECT account_id FROM messages WHERE id = ?", [msg_id], |r| r.get::<_, i64>(0))
-            .optional()
-            .map_err(|e| e.to_string())?
-    };
+    let st = ctx.store.lock().unwrap();
+    check_in(&st, msg_id, &scope)
+}
+
+pub(crate) fn check_in(st: &Store, msg_id: i64, scope: &Scope) -> Result<i64, String> {
+    let account = st
+        .conn
+        .query_row("SELECT account_id FROM messages WHERE id = ?", [msg_id], |r| r.get::<_, i64>(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
     match account {
         Some(a) if scope.allows(a) => Ok(a),
         _ => Err(gone()),
@@ -129,6 +141,81 @@ pub fn check(ctx: &Ctx, msg_id: i64, axis: Axis) -> Result<i64, String> {
 
 pub fn readable(ctx: &Ctx, msg_id: i64) -> Result<i64, String> {
     check(ctx, msg_id, Axis::Read)
+}
+
+pub fn writable(ctx: &Ctx, msg_id: i64) -> Result<i64, String> {
+    check(ctx, msg_id, Axis::Write)
+}
+
+/// 批量操作：全部 id 都存在且都过权限才执行，否则整批拒绝。
+/// 不做部分执行——「改了 3 封、另外 2 封没权限」会让 agent 以为整批都成功了。
+pub fn check_all(ctx: &Ctx, ids: &[i64], axis: Axis) -> Result<Vec<i64>, String> {
+    let scope = Scope::get(ctx, axis);
+    let st = ctx.store.lock().unwrap();
+    check_all_in(&st, ids, &scope)
+}
+
+pub(crate) fn check_all_in(st: &Store, ids: &[i64], scope: &Scope) -> Result<Vec<i64>, String> {
+    if ids.is_empty() {
+        return Err(gone());
+    }
+    let json = serde_json::to_string(ids).map_err(|e| e.to_string())?;
+    let mut q = st
+        .conn
+        .prepare("SELECT id, account_id FROM messages WHERE id IN (SELECT value FROM json_each(?))")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(i64, i64)> = q
+        .query_map([&json], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|x| x.ok())
+        .collect();
+    let found: std::collections::HashSet<i64> = rows.iter().map(|(id, _)| *id).collect();
+    if ids.iter().any(|id| !found.contains(id)) || rows.iter().any(|(_, acc)| !scope.allows(*acc)) {
+        return Err(gone());
+    }
+    Ok(ids.to_vec())
+}
+
+/// 待办：自己的账号要可写，来源邮件所属账号也要可写。
+/// 账号为空的待办不在任何账号的授权范围里，MCP 看不见也改不了（和读路径一致）。
+pub fn todo_writable(ctx: &Ctx, todo_id: i64) -> Result<(), String> {
+    let scope = Scope::write(ctx);
+    let st = ctx.store.lock().unwrap();
+    todo_writable_in(&st, todo_id, &scope)
+}
+
+pub(crate) fn todo_writable_in(st: &Store, todo_id: i64, scope: &Scope) -> Result<(), String> {
+    let row: Option<(Option<i64>, Option<i64>)> = st
+        .conn
+        .query_row("SELECT account_id, msg_id FROM todos WHERE id=?", [todo_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((acc, msg)) = row else { return Err(gone()) };
+    let ok = acc.is_some_and(|a| scope.allows(a))
+        && match msg {
+            None => true,
+            Some(m) => st
+                .conn
+                .query_row("SELECT account_id FROM messages WHERE id=?", [m], |r| r.get::<_, i64>(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+                .is_some_and(|a| scope.allows(a)),
+        };
+    if ok { Ok(()) } else { Err(gone()) }
+}
+
+/// 账号本身是否可写 / 可发（新建草稿、发新信时没有原邮件可查）
+pub fn account_permits(ctx: &Ctx, account_id: i64, axis: Axis) -> bool {
+    Scope::get(ctx, axis).allows(account_id)
+}
+
+pub fn account_email(ctx: &Ctx, account_id: i64) -> String {
+    ctx.store
+        .lock()
+        .unwrap()
+        .conn
+        .query_row("SELECT email FROM accounts WHERE id=?", [account_id], |r| r.get::<_, String>(0))
+        .unwrap_or_default()
 }
 
 /// 附件文件名加固：去掉路径分隔符和控制字符，收尾的点和空格也去掉
@@ -235,5 +322,94 @@ mod tests {
         assert!(Axis::Read.permits(&s, a));
         assert!(!Axis::Write.permits(&s, AccountFlags { read: true, write: true, send: true }));
         assert!(!Axis::Send.permits(&s, AccountFlags { read: true, write: true, send: true }));
+    }
+
+    /// 两个账号各 2 封；账号 2 不在授权范围里
+    fn two_accounts(name: &str) -> (std::path::PathBuf, Store) {
+        let d = std::env::temp_dir().join(format!("kjm-scope-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let st = Store::open(&d).unwrap();
+        for a in [1, 2] {
+            st.conn
+                .execute(
+                    "INSERT INTO accounts (id, email, username, imap_host, imap_port, smtp_host, smtp_port, created) VALUES (?1, ?2, ?2, 'h', 993, 'h', 465, 0)",
+                    rusqlite::params![a, format!("a{a}@example.com")],
+                )
+                .unwrap();
+            st.conn
+                .execute("INSERT INTO folders (id, account_id, path, name, role) VALUES (?1, ?1, 'INBOX', 'Inbox', 'inbox')", [a])
+                .unwrap();
+            for n in 0..2 {
+                st.conn
+                    .execute(
+                        "INSERT INTO messages (id, account_id, folder_id, uid, subject, date) VALUES (?1, ?2, ?2, ?3, ?4, 0)",
+                        rusqlite::params![a * 10 + n, a, n + 1, format!("m{a}-{n}")],
+                    )
+                    .unwrap();
+            }
+        }
+        (d, st)
+    }
+
+    /// 批量写要么全过要么全不动：混进一个不可写账号，整批拒绝，可写的那封也不许改
+    #[test]
+    fn a_batch_with_one_foreign_id_is_rejected_whole() {
+        let (d, st) = two_accounts("batch");
+        let scope = Scope(Some(vec![1]));
+        assert_eq!(check_all_in(&st, &[10, 11], &scope).unwrap(), vec![10, 11]);
+        for ids in [vec![10, 20], vec![20, 10], vec![20]] {
+            assert_eq!(check_all_in(&st, &ids, &scope).unwrap_err(), gone(), "{ids:?}");
+        }
+        drop(st);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 不存在的 id 和越权的 id 说同一句话，且都让整批失败
+    #[test]
+    fn a_missing_id_rejects_the_batch_with_the_same_words() {
+        let (d, st) = two_accounts("missing");
+        let scope = Scope(Some(vec![1]));
+        let missing = check_all_in(&st, &[10, 999999], &scope).unwrap_err();
+        let foreign = check_all_in(&st, &[10, 20], &scope).unwrap_err();
+        assert_eq!(missing, foreign);
+        assert_eq!(check_all_in(&st, &[], &scope).unwrap_err(), gone());
+        drop(st);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 单封的越权读和「查无此信」必须逐字相同
+    #[test]
+    fn reading_a_foreign_message_says_the_same_as_a_missing_one() {
+        let (d, st) = two_accounts("gone");
+        let scope = Scope(Some(vec![1]));
+        assert_eq!(check_in(&st, 10, &scope).unwrap(), 1);
+        assert_eq!(check_in(&st, 20, &scope).unwrap_err(), check_in(&st, 999999, &scope).unwrap_err());
+        drop(st);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 待办的账号为空、或来源邮件属于别的账号，都不许改
+    #[test]
+    fn todos_are_scoped_by_both_their_own_account_and_their_source() {
+        let (d, st) = two_accounts("todo");
+        let scope = Scope(Some(vec![1]));
+        let todo = |id: i64, acc: Option<i64>, msg: Option<i64>| {
+            st.conn
+                .execute("INSERT INTO todos (id, account_id, msg_id, text, created) VALUES (?1, ?2, ?3, 't', 0)", rusqlite::params![id, acc, msg])
+                .unwrap();
+        };
+        todo(1, Some(1), None);
+        todo(2, Some(1), Some(10));
+        todo(3, Some(1), Some(20));
+        todo(4, Some(2), None);
+        todo(5, None, Some(10));
+        todo(6, None, None);
+        assert!(todo_writable_in(&st, 1, &scope).is_ok());
+        assert!(todo_writable_in(&st, 2, &scope).is_ok());
+        for id in [3, 4, 5, 6, 999] {
+            assert_eq!(todo_writable_in(&st, id, &scope).unwrap_err(), gone(), "todo {id}");
+        }
+        drop(st);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

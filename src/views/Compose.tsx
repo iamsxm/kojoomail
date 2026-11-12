@@ -30,7 +30,8 @@ export default function Compose() {
         cc = [...base.to, ...base.cc].filter((a) => { const k = a.email.toLowerCase(); if (self.has(k) || seen.has(k)) return false; seen.add(k); return true })
       }
       subject = /^re:/i.test(base.subject) ? base.subject : `Re: ${base.subject}`
-      quote = quoteText(base.text, EN ? `On ${fullTime(base.date)}, ${base.fromName ? `${base.fromName} <${base.fromAddr}>` : base.fromAddr} wrote:` : `在 ${fullTime(base.date)}，${base.fromName || base.fromAddr} 写道：`)
+      const who = base.fromName ? `${base.fromName} <${base.fromAddr}>` : base.fromAddr
+      quote = quoteText(base.text, EN ? `On ${fullTime(base.date)}, ${who} wrote:` : `在 ${fullTime(base.date)}，${who} 写道：`)
     } else if (base && c.mode === 'forward') {
       subject = /^(fwd?|转发):/i.test(base.subject) ? base.subject : `Fwd: ${base.subject}`
       quote = EN

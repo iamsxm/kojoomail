@@ -365,7 +365,7 @@ function Ai() {
           ))}
           <div className="gr" style={{ minHeight: 52 }}>
             <Icon name="lock" style={{ color: 'var(--sec)' }} />
-            <div className="grow"><div className="lbl">{L('AI 只能起草，不能自动发送', 'AI can only draft, never send')}</div><div className="sub">{L('防止来信里夹带指令让 AI 代你发信，这一项不能关闭', "Stops instructions hidden in incoming mail from making AI send email for you. This can't be turned off")}</div></div>
+            <div className="grow"><div className="lbl">{L('应用内 AI 只能起草，不能自动发送', 'In-app AI can only draft, never send')}</div><div className="sub">{L('防止来信里夹带指令让 AI 代你发信，这一项不能关闭。外部 agent 走的是「MCP 服务」那条独立通道，要单独开启，发信还得你每次点允许', "Stops instructions hidden in incoming mail from making AI send email for you. This can't be turned off. External agents use the separate MCP server channel, which you enable on its own and where every send needs your approval")}</div></div>
             <span className="tag">{L('始终开启', 'Always on')}</span>
           </div>
         </div>
@@ -398,7 +398,7 @@ function Mcp() {
 
   return (
     <>
-      <Head title={L('MCP 服务', 'MCP server')} lead={L('让本机的 AI agent（Claude Code、Codex、Cursor 等）通过标准 MCP 协议读你的邮件。', 'Let AI agents on this computer (Claude Code, Codex, Cursor…) read your mail over the standard MCP protocol.')} />
+      <Head title={L('MCP 服务', 'MCP server')} lead={L('让本机的 AI agent（Claude Code、Codex、Cursor 等）通过标准 MCP 协议读你的邮件。改标记、写草稿和发信要另外逐项开启。', 'Let AI agents on this computer (Claude Code, Codex, Cursor…) read your mail over the standard MCP protocol. Marking, drafting and sending each need to be turned on separately.')} />
       <section>
         <h2 className="gh">{L('服务', 'Server')}</h2>
         <div className="group sq">
@@ -460,7 +460,7 @@ function Mcp() {
         <h2 className="gh">{L('权限', 'Permissions')}</h2>
         <div className="group sq">
           <div className="gr" style={{ minHeight: 52 }}>
-            <div className="grow"><div className="lbl">{L('允许读取邮件', 'Allow reading mail')}</div><div className="sub">{L('列出账号和文件夹、搜索、读正文、查联系人和待办。当前版本只能读，不能发信、改标记或删邮件', 'List accounts and folders, search, read bodies, look up contacts and to-dos. This version is read-only: no sending, marking or deleting')}</div></div>
+            <div className="grow"><div className="lbl">{L('允许读取邮件', 'Allow reading mail')}</div><div className="sub">{L('列出账号和文件夹、搜索、读正文、查联系人和待办', 'List accounts and folders, search, read bodies, look up contacts and to-dos')}</div></div>
             <Switch label={L('允许读取邮件', 'Allow reading mail')} on={st.mcpRead} onChange={(v) => s.saveSettings({ mcpRead: v })} />
           </div>
           {s.accounts.map((a) => (
@@ -482,6 +482,63 @@ function Mcp() {
             <Icon name="lock" style={{ color: 'var(--sec)' }} />
             <div className="grow"><div className="lbl">{L('存附件会写到「下载」文件夹', 'Saving an attachment writes to your Downloads folder')}</div><div className="sub">{L('这是读权限唯一会动到磁盘的工具：只新建文件，重名自动加序号，绝不覆盖，也不弹资源管理器', 'The only read tool that touches disk: it creates new files, adds a number on name clashes, never overwrites and never opens Explorer')}</div></div>
           </div>
+        </div>
+      </section>
+      <section>
+        <h2 className="gh">{L('修改邮件', 'Changing mail')}</h2>
+        <div className="group sq">
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div className="grow"><div className="lbl">{L('允许修改邮件', 'Allow changing mail')}</div><div className="sub">{L('标已读 / 未读、加星标、移动到别的文件夹、稍后处理、增删待办。改动会同步回邮件服务器', 'Mark read / unread, star, move to another folder, snooze, add and remove to-dos. Changes sync back to the mail server')}</div></div>
+            <Switch label={L('允许修改邮件', 'Allow changing mail')} on={st.mcpWrite} onChange={(v) => s.saveSettings({ mcpWrite: v })} />
+          </div>
+          {st.mcpWrite && s.accounts.map((a) => (
+            <div className="gr" key={a.id}>
+              <span className="dot" style={{ background: a.color }} />
+              <div className="grow"><div className="lbl">{L(`${a.label || a.email} 允许修改`, `Allow changing ${a.label || a.email}`)}</div>{!a.mcpWrite && <div className="sub">{L('已关闭：agent 改不了这个账号的邮件', 'Off: the agent cannot change this account’s mail')}</div>}</div>
+              <Switch label={L(`${a.email} 允许修改`, `Allow changing ${a.email}`)} on={a.mcpWrite} onChange={async (v) => { await api.updateAccount(a.id, { mcpWrite: v }); s.refreshMeta() }} />
+            </div>
+          ))}
+          {st.mcpWrite && (
+            <div className="gr" style={{ minHeight: 52 }}>
+              <Icon name="lock" style={{ color: 'var(--sec)' }} />
+              <div className="grow"><div className="lbl">{L('永久删除每次都要你确认', 'Permanent deletion always asks you first')}</div><div className="sub">{L('不管开关怎么设，删除前一定弹桌面确认框，列出账号和主题。一批邮件里只要有一封不属于已授权的账号，整批都不动', 'Whatever the switches say, a desktop dialog lists the accounts and subjects before anything is deleted. If one message in a batch belongs to an account you have not authorized, the whole batch is left alone')}</div></div>
+              <span className="tag">{L('始终开启', 'Always on')}</span>
+            </div>
+          )}
+        </div>
+      </section>
+      <section>
+        <h2 className="gh">{L('发信', 'Sending')}</h2>
+        <div className="group sq">
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div className="grow"><div className="lbl">{L('允许 agent 写信', 'Let agents compose mail')}</div><div className="sub">{L('新建、回复、全部回复、转发。默认只存草稿，发送键还是只有你能点', 'New mail, reply, reply all, forward. By default it only saves drafts — you are still the only one who can press Send')}</div></div>
+            <Switch label={L('允许 agent 写信', 'Let agents compose mail')} on={st.mcpSend} onChange={(v) => s.saveSettings({ mcpSend: v })} />
+          </div>
+          {st.mcpSend && (
+            <>
+              <div className="gr"><span className="lbl">{L('发信方式', 'How mail gets sent')}</span>
+                <Seg small value={st.mcpSendMode} onChange={(v) => s.saveSettings({ mcpSendMode: v })} options={[['draft', L('只存草稿', 'Draft only')], ['confirm', L('每次确认后发送', 'Confirm each send')]]} />
+              </div>
+              {s.accounts.map((a) => (
+                <div className="gr" key={a.id}>
+                  <span className="dot" style={{ background: a.color }} />
+                  <div className="grow"><div className="lbl">{L(`${a.label || a.email} 允许发信`, `Allow sending from ${a.label || a.email}`)}</div>{!a.mcpSend && <div className="sub">{L('已关闭：agent 用不了这个账号写信', 'Off: the agent cannot compose from this account')}</div>}</div>
+                  <Switch label={L(`${a.email} 允许发信`, `Allow sending from ${a.email}`)} on={a.mcpSend} onChange={async (v) => { await api.updateAccount(a.id, { mcpSend: v }); s.refreshMeta() }} />
+                </div>
+              ))}
+              <div className="gr" style={{ minHeight: 52 }}>
+                <Icon name="lock" style={{ color: 'var(--sec)' }} />
+                {st.mcpSendMode === 'confirm' ? (
+                  <>
+                    <div className="grow"><div className="lbl">{L('每封信发出前都要你点允许', 'Every send needs your approval')}</div><div className="sub">{L('确认框里完整列出发件账号、全部收件人、主题、附件和正文开头。点拒绝、关掉窗口、或 120 秒没响应，都算拒绝，一封也发不出去。没有无人值守直发这一档', 'The dialog lists the sending account, every recipient, the subject, attachments and the start of the body. Denying, closing the window or leaving it for 120 seconds all count as refusal and nothing is sent. There is no unattended-send option')}</div></div>
+                    <span className="tag">{L('始终开启', 'Always on')}</span>
+                  </>
+                ) : (
+                  <div className="grow"><div className="lbl">{L('agent 只能存草稿', 'Agents can only save drafts')}</div><div className="sub">{L('这一档下根本没有发送工具，agent 连它的名字都看不到。草稿存在本地，你打开确认后再自己发', 'In this mode there is no send tool at all — the agent cannot even see its name. Drafts stay on this computer until you open one and send it yourself')}</div></div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </section>
     </>
