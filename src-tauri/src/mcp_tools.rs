@@ -522,6 +522,7 @@ impl Mail {
     )]
     async fn mail_draft_save(&self, Parameters(p): Parameters<ComposeArgs>) -> Out {
         let account = self.sending_account(p.account_id)?;
+        check_refs(self.ctx(), p.id, p.reply_msg)?;
         let ob = outbound(account, &p)?;
         let id = commands::save_draft_inner(self.ctx(), ob.draft).map_err(fail)?;
         mcp_approval::audit("mail_draft_save", &mcp_scope::account_email(self.ctx(), account), &format!("to={} subject={}", ob.to.len(), mcp_approval::clean(&ob.subject, 80)), true);
@@ -595,6 +596,7 @@ impl Mail {
     )]
     async fn mail_send(&self, Parameters(p): Parameters<ComposeArgs>) -> Out {
         let account = self.sending_account(p.account_id)?;
+        check_refs(self.ctx(), p.id, p.reply_msg)?;
         let ob = outbound(account, &p)?;
         if ob.to.is_empty() {
             return Err(fail("no recipients".into()));
@@ -607,6 +609,9 @@ impl Mail {
 struct Outbound {
     draft: commands::DraftIn,
     account: i64,
+    /// 确认框可能开着一两分钟，用户期间撤了权限就得拦下来，所以这两个 id 要留到发送前再判一次
+    draft_id: Option<i64>,
+    reply_msg: Option<i64>,
     to: Vec<Addr>,
     cc: Vec<Addr>,
     bcc: Vec<Addr>,
@@ -683,6 +688,7 @@ impl Mail {
         if !mcp_scope::account_permits(ctx, ob.account, Axis::Send) {
             return Err(fail(mcp_scope::gone()));
         }
+        check_refs(ctx, ob.draft_id, ob.reply_msg)?;
         commands::precheck_send_inner(ctx, &ob.draft).map_err(fail)?;
         commands::send_mail_inner(self.shared.ctx.clone(), ob.draft).await.map_err(fail)?;
         mcp_approval::audit(tool, &account, &format!("to={} att={}", ob.to.len(), ob.files.len()), true);
@@ -996,6 +1002,19 @@ fn header_safe(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
 
+/// `id` 和 `replyMsg` 是 agent 直接给的裸 id，必须现查归属：借别账号的草稿 id 能把那封草稿
+/// 改写到自己的账号下；借别账号的邮件 id 能把它标成已回复，转发时还会把它的附件字节带进新信。
+fn check_refs(ctx: &Ctx, draft_id: Option<i64>, reply_msg: Option<i64>) -> Result<(), CallToolResult> {
+    if let Some(id) = draft_id {
+        mcp_scope::draft_sendable(ctx, id).map_err(fail)?;
+    }
+    if let Some(rid) = reply_msg {
+        mcp_scope::readable(ctx, rid).map_err(fail)?;
+    }
+    Ok(())
+}
+
+/// 只组装，不判权限：`id` / `replyMsg` 原样进 DraftIn，调用方必须先确认它们属于授权账号
 fn outbound(account: i64, p: &ComposeArgs) -> Result<Outbound, CallToolResult> {
     let to = rcpts(&p.to)?;
     let cc = rcpts(&p.cc)?;
@@ -1030,7 +1049,7 @@ fn outbound(account: i64, p: &ComposeArgs) -> Result<Outbound, CallToolResult> {
         "attachments": p.attachments,
     }))
     .map_err(|e| fail(e.to_string()))?;
-    Ok(Outbound { draft, account, to, cc, bcc, subject, body, files })
+    Ok(Outbound { draft, account, draft_id: p.id, reply_msg: p.reply_msg, to, cc, bcc, subject, body, files })
 }
 
 #[cfg(test)]

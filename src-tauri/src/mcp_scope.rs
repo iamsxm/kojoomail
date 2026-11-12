@@ -204,6 +204,27 @@ pub(crate) fn todo_writable_in(st: &Store, todo_id: i64, scope: &Scope) -> Resul
     if ok { Ok(()) } else { Err(gone()) }
 }
 
+/// 改草稿：草稿现在属于哪个账号，就得是哪个可发的账号。
+/// 只判目标账号不够——`UPDATE drafts SET account_id=? WHERE id=?` 会连同归属一起改掉，
+/// 借一个别账号的草稿 id 就能把那封草稿搬到自己名下。
+pub fn draft_sendable(ctx: &Ctx, draft_id: i64) -> Result<(), String> {
+    let scope = Scope::send(ctx);
+    let st = ctx.store.lock().unwrap();
+    draft_sendable_in(&st, draft_id, &scope)
+}
+
+pub(crate) fn draft_sendable_in(st: &Store, draft_id: i64, scope: &Scope) -> Result<(), String> {
+    let acc = st
+        .conn
+        .query_row("SELECT account_id FROM drafts WHERE id=?", [draft_id], |r| r.get::<_, Option<i64>>(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match acc {
+        Some(Some(a)) if scope.allows(a) => Ok(()),
+        _ => Err(gone()),
+    }
+}
+
 /// 账号本身是否可写 / 可发（新建草稿、发新信时没有原邮件可查）
 pub fn account_permits(ctx: &Ctx, account_id: i64, axis: Axis) -> bool {
     Scope::get(ctx, axis).allows(account_id)
@@ -384,6 +405,26 @@ mod tests {
         let scope = Scope(Some(vec![1]));
         assert_eq!(check_in(&st, 10, &scope).unwrap(), 1);
         assert_eq!(check_in(&st, 20, &scope).unwrap_err(), check_in(&st, 999999, &scope).unwrap_err());
+        drop(st);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 改草稿会连 account_id 一起改掉，所以归属按「草稿现在属于谁」判，不是按目标账号判。
+    /// 账号为空的草稿和待办一样不在任何授权范围里。
+    #[test]
+    fn a_draft_can_only_be_rewritten_by_its_own_sendable_account() {
+        let (d, st) = two_accounts("draft");
+        let scope = Scope(Some(vec![1]));
+        for (id, acc) in [(1, Some(1)), (2, Some(2)), (3, None)] {
+            st.conn
+                .execute("INSERT INTO drafts (id, account_id, subject, updated) VALUES (?1, ?2, 's', 0)", rusqlite::params![id, acc])
+                .unwrap();
+        }
+        assert!(draft_sendable_in(&st, 1, &scope).is_ok());
+        for id in [2, 3, 999] {
+            assert_eq!(draft_sendable_in(&st, id, &scope).unwrap_err(), gone(), "draft {id}");
+        }
+        assert_eq!(draft_sendable_in(&st, 1, &Scope(Some(vec![]))).unwrap_err(), gone());
         drop(st);
         let _ = std::fs::remove_dir_all(&d);
     }
