@@ -115,6 +115,7 @@ fn parse_scutil(t: &str) -> Option<(String, Vec<String>)> {
 }
 
 /// "127.0.0.1:7890" 或 "http=…;https=…;socks=…"：取 HTTPS 的，没有就取 HTTP 的（只有 SOCKS 时不用）
+#[cfg(any(windows, test))]
 fn parse_server(v: &str) -> Option<String> {
     let v = v.trim();
     let pick = if v.contains('=') {

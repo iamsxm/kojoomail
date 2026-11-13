@@ -79,8 +79,8 @@ pub static HIDDEN_START: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 pub static FLAG_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 缩到托盘时让 WebView2 把内存降到最低（释放缓存、压缩页面），显示时恢复
+#[cfg(windows)]
 pub fn set_low_memory(w: &tauri::WebviewWindow, low: bool) {
-    #[cfg(windows)]
     let _ = w.with_webview(move |wv| unsafe {
         use webview2_com::Microsoft::Web::WebView2::Win32::*;
         use windows::core::Interface;
@@ -91,6 +91,9 @@ pub fn set_low_memory(w: &tauri::WebviewWindow, low: bool) {
         }
     });
 }
+
+#[cfg(not(windows))]
+pub fn set_low_memory(_w: &tauri::WebviewWindow, _low: bool) {}
 
 /// 托盘菜单项：改界面语言时重设文字
 pub struct TrayItems {
