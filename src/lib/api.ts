@@ -26,6 +26,7 @@ export type Status = {
   lastOk: number; fails: number; progressDone: number; progressTotal: number; log: string[]
 }
 export type Settings = {
+  skippedUpdateVersion: string
   theme: 'system' | 'light' | 'dark'; fontSize: number; density: 'compact' | 'standard' | 'cozy'; serifTitles: boolean
   autostart: boolean; closeToTray: boolean; defaultAccount: number | null; notify: 'important' | 'all' | 'none'
   remoteImages: 'ask' | 'always'; undoSendSecs: number
@@ -62,6 +63,7 @@ export type Todo = {
 export type Att = { idx: number; name: string; size: number; mime: string; inline: boolean }
 export type MsgFull = MsgLite & { cc: Addr[]; replyTo: string; msgid: string; refs: string; inReplyTo: string; text: string; html: string; atts: Att[]; ai: AiResult | null; aiPending: boolean; todos: Todo[] }
 export type Draft = { id: number; accountId: number | null; to: Addr[]; cc: Addr[]; bcc: Addr[]; subject: string; body: string; content: MailContent; replyMsg: number | null; mode: string; updated: number; attachments: string[] }
+export type UpdateInfo = { version: string; notes: string }
 export type ListQuery = { view: 'all' | 'important' | 'later' | 'bills' | 'followup' | 'sent' | 'folder'; accountId?: number | null; folderId?: number | null; filter?: string; search?: string; maxId?: number | null; offset: number; limit: number }
 export type DigestItem = { id: number; accountId: number; who: string; subject: string; summary: string; date: number; seen: boolean; high: boolean }
 export type DigestTodo = { id: number; msgId: number | null; text: string; due: number | null }
@@ -142,7 +144,7 @@ export const api = {
   aiTest: () => call<{ ms: number; model: string }>('ai_test'),
   aiModels: () => call<string[]>('ai_models'),
   exportDiagnostics: () => call<string>('export_diagnostics'),
-  checkUpdate: () => call<{ version: string; notes: string } | null>('check_update'),
+  checkUpdate: () => call<UpdateInfo | null>('check_update'),
   installUpdate: () => call<void>('install_update'),
   statusList: () => call<Status[]>('status_list'),
   showMain: (boot = false) => call<void>('show_main', { boot }),

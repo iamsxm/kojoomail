@@ -600,6 +600,7 @@ function Keys() {
 
 function About() {
   const s = useApp()
+  const [checking, setChecking] = useState(false)
   return (
     <>
       <Head title={L('关于', 'About')} lead={L('Kojoo Mail：所有邮箱，一个收件箱。', 'Kojoo Mail: all your mailboxes, one inbox.')} />
@@ -607,21 +608,14 @@ function About() {
         <div className="gr"><span className="lbl">{L('版本', 'Version')}</span>
           <div className="row" style={{ gap: 8 }}>
             <span className="mono" style={{ fontSize: 12.5 }}>{s.version}</span>
-            <button className="btn sm sq" onClick={async () => {
+            <button className="btn sm sq" disabled={checking || s.updateBusy} onClick={async () => {
+              setChecking(true)
               try {
                 const u = await api.checkUpdate()
                 if (!u) { s.toast(L('已经是最新版', "You're up to date")); return }
-                if (await ask(L(`有新版本 ${u.version}${u.notes ? `
-
-${u.notes}` : ''}
-
-现在下载安装？装好后会自动重启。`, `Version ${u.version} is available${u.notes ? `
-
-${u.notes}` : ''}
-
-Download and install now? The app restarts when it's done.`))) s.installUpdate(u.version)
-              } catch (e) { s.toast(errText(e), { kind: 'err' }) }
-            }}>{L('检查更新', 'Check for updates')}</button>
+                s.promptUpdate(u, true)
+              } catch (e) { s.toast(errText(e), { kind: 'err' }) } finally { setChecking(false) }
+            }}>{checking ? L('正在检查…', 'Checking…') : L('检查更新', 'Check for updates')}</button>
           </div>
         </div>
         <div className="gr"><div><div className="lbl">{L('数据存在哪', 'Where your data lives')}</div><div className="sub mono">{L(`${DATA_DIR}（邮件缓存和设置），密码在${VAULT}`, `${DATA_DIR} (mail cache and settings); passwords in ${VAULT}`)}</div></div></div>

@@ -202,7 +202,7 @@ export default function Compose() {
   }
 
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); send() } }
+    const h = (e: KeyboardEvent) => { if (!document.querySelector('dialog[open]') && (e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); send() } }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   })

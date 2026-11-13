@@ -111,7 +111,7 @@ export function MdView({ md, content, className }: { className: string } & ({ md
 
 export function Sheet({ children, onClose, className = '', label }: { children: ReactNode; onClose: () => void; className?: string; label: string }) {
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) { e.stopPropagation(); onClose() } }
     window.addEventListener('keydown', h, true)
     return () => window.removeEventListener('keydown', h, true)
   }, [onClose])

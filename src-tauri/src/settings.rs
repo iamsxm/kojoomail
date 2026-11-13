@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    /// 用户跳过的更新版本；手动检查更新仍可查看和安装。
+    pub skipped_update_version: String,
     /// system | light | dark
     pub theme: String,
     pub font_size: f32,
@@ -52,6 +54,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            skipped_update_version: String::new(),
             theme: "system".into(),
             font_size: 13.0,
             density: "standard".into(),

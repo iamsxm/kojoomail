@@ -3,7 +3,7 @@ import './lib/i18n'
 import React, { useEffect, useRef } from 'react'
 import ReactDOM from 'react-dom/client'
 import './styles.css'
-import { api, on, type Status } from './lib/api'
+import { api, on, type Status, type UpdateInfo } from './lib/api'
 import { useApp } from './store'
 import { Loader, Toasts, isTyping } from './ui'
 import { IS_MAC } from './lib/platform'
@@ -18,6 +18,7 @@ import SettingsPage from './views/Settings'
 import Welcome from './views/Welcome'
 import { AddAccount, RepairAccount } from './views/AccountSheets'
 import { GuideSheet } from './views/Guide'
+import UpdateDialog from './views/UpdateDialog'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { L } from './lib/i18n'
 
@@ -77,10 +78,7 @@ function useBackendEvents() {
         if (useApp.getState().selected === p.msgId) reopen = true
         refresh()
       }),
-      on<{ version: string; notes: string }>('update-available', (u) => {
-        const s = useApp.getState()
-        s.toast(L(`有新版本 ${u.version}${u.notes ? `：${u.notes.slice(0, 60)}` : ''}`, `Version ${u.version} is available${u.notes ? `: ${u.notes.slice(0, 60)}` : ''}`), { action: { label: L('更新', 'Update'), run: () => useApp.getState().installUpdate(u.version) }, ttl: 30000 })
-      }),
+      on<UpdateInfo>('update-available', (u) => useApp.getState().promptUpdate(u)),
       on('tray-compose', () => { const s = useApp.getState(); if (s.accounts.length) s.openCompose('new') }),
     ]
     return () => { subs.forEach((p) => p.then((f) => f())) }
@@ -90,6 +88,7 @@ function useBackendEvents() {
 function useShortcuts(searchRef: React.RefObject<HTMLInputElement>) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return
       const s = useApp.getState()
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); searchRef.current?.focus(); return }
       if ((e.ctrlKey || e.metaKey) && e.key === ',') { e.preventDefault(); s.set({ page: 'settings' }); return }
@@ -164,6 +163,7 @@ function App() {
       {s.addAccount && <AddAccount />}
       {s.repairAccount && <RepairAccount />}
       <GuideSheet />
+      <UpdateDialog />
       <Toasts />
     </div>
   )

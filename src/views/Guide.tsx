@@ -115,7 +115,7 @@ function GuideZh() {
           <Item k="账号无法同步">左侧账号下面出现「授权失效，点此修复」或「连接出错」时点它：密码或授权码改过就填新的；一键登录的账号点「重新登录」。网络问题会自动重连。</Item>
           <Item k="Gmail 连不上">确认代理软件开着，并且设置成了系统代理。</Item>
           <Item k="没有 AI 批注">设置 → AI 与模型 →「测试连接」看看密钥和模型名能不能用（模型名不对时，在「模型分工」里点输入框从列表里选）；也可能是今天的自动分析额度用完了，打开邮件点「让 AI 分析」。</Item>
-          <Item k="更新">有新版本时右下角会提示，点「更新」自动下载安装并重启；也可以在设置 → 关于点「检查更新」。更新包有签名校验，不是官方发布的装不上。</Item>
+          <Item k="更新">有新版本时会弹窗展示版本和更新说明，点「安装并重启」下载安装；也可以选「稍后」或「跳过此版本」。设置 → 关于的「检查更新」仍可查看已跳过的版本。更新包有签名校验，不是官方发布的装不上。</Item>
           <Item k="其他问题">设置 → 关于 →「导出诊断信息」，把「下载」文件夹里生成的文件发给开发者。里面是连接和发信记录，邮箱地址已打码，不含密码和邮件内容。</Item>
         </div>
       </section>
@@ -213,7 +213,7 @@ function GuideEn() {
           <Item k="Account won't sync">When "Sign-in expired, click to fix" or "Connection error" appears under an account on the left, click it: enter the new password or app password if it changed; for one-click sign-in accounts, click "Sign in again". Network problems reconnect automatically.</Item>
           <Item k="Gmail won't connect">Make sure your proxy app is running and set as the system proxy.</Item>
           <Item k="No AI notes">Settings → AI & models → "Test connection" to check that the key and model name work (if the model name is wrong, click the field under "Model roles" and pick from the list). Today's automatic analysis limit may also be used up; open the email and click "Analyze with AI".</Item>
-          <Item k="Updates">When a new version is out, a prompt appears at the bottom right; click "Update" to download, install and restart. You can also click "Check for updates" in Settings → About. Updates are signature-checked, so unofficial builds won't install.</Item>
+          <Item k="Updates">New versions appear in a dialog with release notes. Choose "Install and restart", "Later", or "Skip this version". "Check for updates" in Settings → About also shows versions you skipped. Updates are signature-checked, so unofficial builds won't install.</Item>
           <Item k="Other problems">Settings → About → "Export diagnostics", then send the file it creates in your Downloads folder to the developer. It contains connection and sending logs with email addresses masked, and no passwords or mail content.</Item>
         </div>
       </section>

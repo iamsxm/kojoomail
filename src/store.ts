@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { ask } from './lib/ask'
-import { api, errText, type Account, type AskOut, type CatCount, type Counts, type Folder, type MsgFull, type MsgLite, type Settings, type Status, type DraftIn } from './lib/api'
+import { api, errText, type Account, type AskOut, type CatCount, type Counts, type Folder, type MsgFull, type MsgLite, type Settings, type Status, type DraftIn, type UpdateInfo } from './lib/api'
 import { L, syncLang } from './lib/i18n'
 
 /** 点了发送、还在可撤销倒计时里的邮件数：这时不能重新加载界面（换语言） */
@@ -28,6 +28,7 @@ export type Page = 'mail' | 'todo' | 'digest' | 'settings'
 
 const PAGE = 80
 let seq = 0
+let deferredUpdate = ''
 
 type S = {
   ready: boolean
@@ -68,6 +69,9 @@ type S = {
   repairAccount: number | null
   /** 教程弹窗（欢迎页用；有账号后在设置里看） */
   guide: boolean
+  updateInfo: UpdateInfo | null
+  updateBusy: boolean
+  updateError: string
   toasts: Toast[]
 
   set: (p: Partial<S>) => void
@@ -99,6 +103,9 @@ type S = {
   /** 去「设置 → AI 与模型」 */
   openAiSettings: () => void
   /** 下载并安装新版本（装完自动重启） */
+  promptUpdate: (info: UpdateInfo, manual?: boolean) => void
+  dismissUpdate: () => void
+  skipUpdate: () => Promise<void>
   installUpdate: (version: string) => Promise<void>
   toast: (text: string, opt?: Partial<Toast>) => number
   drop: (id: number) => void
@@ -159,6 +166,9 @@ export const useApp = create<S>((set, get) => ({
   aiConfigured: false,
   aiUsedToday: 0,
   version: '',
+  updateInfo: null,
+  updateBusy: false,
+  updateError: '',
   oauth: [],
   page: 'mail',
   settingsTab: 'general',
@@ -406,10 +416,37 @@ export const useApp = create<S>((set, get) => ({
 
   openCompose: (mode, base = null, extra = {}) => set({ compose: { key: ++seq, mode, base, ...extra } }),
   openAiSettings: () => set({ page: 'settings', settingsTab: 'ai' }),
+  promptUpdate: (info, manual = false) => {
+    if (get().updateBusy) return
+    if (!manual && (get().settings?.skippedUpdateVersion === info.version || deferredUpdate === info.version)) return
+    set({ updateInfo: info, updateError: '' })
+  },
+  dismissUpdate: () => {
+    if (get().updateBusy) return
+    deferredUpdate = get().updateInfo?.version ?? ''
+    set({ updateInfo: null, updateError: '' })
+  },
+  skipUpdate: async () => {
+    const info = get().updateInfo
+    if (!info || get().updateBusy) return
+    await get().saveSettings({ skippedUpdateVersion: info.version })
+    if (get().settings?.skippedUpdateVersion === info.version) get().dismissUpdate()
+    else set({ updateError: L('未能保存跳过版本的设置，请重试或选择“稍后”。', 'Could not save the skipped version. Try again or choose Later.') })
+  },
   installUpdate: async (version) => {
-    if (get().compose && !await ask(L('写信窗口还开着，更新会关闭程序（草稿会自动保存）。继续吗？', "You're still writing an email. Updating will close the app (your draft is saved automatically). Continue?"))) return
-    const t = get().toast(L(`正在下载 ${version}…装好后会自动重启`, `Downloading ${version}… The app will restart when it's installed`), { ttl: 600000 })
-    try { await api.installUpdate() } catch (e) { get().drop(t); get().toast(errText(e), { kind: 'err', ttl: 8000 }) }
+    if (get().updateBusy || get().updateInfo?.version !== version) return
+    if (pendingSends.n > 0) {
+      set({ updateError: L('邮件正在发送，请等待发送完成后再安装更新。', 'Wait for the outgoing emails to finish before installing the update.') })
+      return
+    }
+    set({ updateBusy: true, updateError: '' })
+    try {
+      if (get().compose && !await ask(L('写信窗口还开着，更新会关闭程序（草稿会自动保存）。继续吗？', "You're still writing an email. Updating will close the app (your draft is saved automatically). Continue?"))) {
+        set({ updateBusy: false })
+        return
+      }
+      await api.installUpdate()
+    } catch (e) { set({ updateBusy: false, updateError: errText(e) }) }
   },
 
   toast: (text, opt = {}) => {
