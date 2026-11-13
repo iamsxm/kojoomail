@@ -278,11 +278,26 @@ impl Store {
     pub fn refresh_counts(&self, account_id: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE folders SET
-               unread = (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id AND m.seen = 0),
-               total = (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id)
+               unread = (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id AND m.seen = 0 AND m.moving = 0),
+               total = (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id AND m.moving = 0)
              WHERE account_id = ?",
             [account_id],
         )?;
+        Ok(())
+    }
+
+    /// 移动失败后恢复原位置，同时恢复可见性；正文及关联的 AI、待办继续使用原邮件 id。
+    pub fn rollback_moves(&self, account_id: i64, ids: &[i64]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            tx.execute(
+                "UPDATE messages SET folder_id=orig_folder, uid=orig_uid, moving=0, orig_folder=NULL, orig_uid=NULL
+                 WHERE id=? AND account_id=? AND uid<0 AND orig_folder IS NOT NULL",
+                params![id, account_id],
+            )?;
+        }
+        self.refresh_counts(account_id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -358,6 +373,38 @@ mod migrate_tests {
         drop(st);
         Store::open(&d).unwrap();
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn moving_counts_match_visible_rows_and_rollback_restores_original_message() {
+        let d = tmp("moving-counts");
+        let st = Store::open(&d).unwrap();
+        st.conn.execute("INSERT INTO accounts(id,email,username,imap_host,imap_port,smtp_host,smtp_port,created) VALUES(1,'a@example.com','a','h',993,'h',465,0)", []).unwrap();
+        st.conn.execute("INSERT INTO folders(id,account_id,path,name,role) VALUES(1,1,'INBOX','Inbox','inbox'),(5,1,'Junk E-mail','Junk','junk')", []).unwrap();
+        st.conn.execute("INSERT INTO messages(id,account_id,folder_id,uid,moving,seen,body_text,has_body) VALUES(10,1,5,-10,1,0,'缓存正文',1),(11,1,5,20,0,1,'',0)", []).unwrap();
+        st.conn.execute("UPDATE messages SET orig_folder=1,orig_uid=7 WHERE id=10", []).unwrap();
+        st.conn.execute("INSERT INTO ai(msg_id,summary) VALUES(10,'保留批注')", []).unwrap();
+        st.conn.execute("INSERT INTO todos(msg_id,text,created) VALUES(10,'保留待办',0)", []).unwrap();
+        let counts = |id| st.conn.query_row("SELECT unread,total FROM folders WHERE id=?", [id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).unwrap();
+        st.refresh_counts(1).unwrap();
+        assert_eq!(counts(5), (0, 1), "隐藏的 moving 行不能计入侧栏");
+        // 其他账号不能回滚本账号的移动。
+        st.rollback_moves(2, &[10]).unwrap();
+        assert_eq!(counts(1), (0, 0));
+        st.rollback_moves(1, &[10]).unwrap();
+        assert_eq!(counts(1), (1, 1));
+        assert_eq!(counts(5), (0, 1));
+        let row: (i64, i64, bool, String, Option<i64>, Option<i64>) = st.conn.query_row(
+            "SELECT folder_id,uid,moving,body_text,orig_folder,orig_uid FROM messages WHERE id=10", [],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+        ).unwrap();
+        assert_eq!(row, (1,7,false,"缓存正文".into(),None,None));
+        assert_eq!(st.conn.query_row("SELECT summary FROM ai WHERE msg_id=10", [], |r| r.get::<_, String>(0)).unwrap(), "保留批注");
+        assert_eq!(st.conn.query_row("SELECT text FROM todos WHERE msg_id=10", [], |r| r.get::<_, String>(0)).unwrap(), "保留待办");
+        st.rollback_moves(1, &[10]).unwrap();
+        assert_eq!(counts(1), (1, 1), "重复回滚应为空操作");
+        drop(st);
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

@@ -630,10 +630,10 @@ fn locate(ctx: &Ctx, ids: &[i64]) -> Vec<(i64, i64, String, u32)> {
     locate_in(&st, ids)
 }
 
-/// 一次查完（几千封也只一条 SQL）；已移走等回号的占位行（uid<0）不在结果里
+/// 一次查完（几千封也只一条 SQL）；移动撤销窗口和等待服务器 UID 的占位行不在结果里。
 fn locate_in(st: &crate::store::Store, ids: &[i64]) -> Vec<(i64, i64, String, u32)> {
     let Ok(mut q) = st.conn.prepare(
-        "SELECT m.id, m.account_id, f.path, m.uid FROM messages m JOIN folders f ON f.id=m.folder_id WHERE m.id IN (SELECT value FROM json_each(?)) AND m.uid > 0",
+        "SELECT m.id, m.account_id, f.path, m.uid FROM messages m JOIN folders f ON f.id=m.folder_id WHERE m.id IN (SELECT value FROM json_each(?)) AND m.uid > 0 AND m.moving=0",
     ) else {
         return vec![];
     };
@@ -732,16 +732,17 @@ pub async fn move_to(ctx: State<'_, Arc<Ctx>>, ids: Vec<i64>, target: String) ->
 }
 
 pub(crate) async fn move_to_inner(ctx: Arc<Ctx>, ids: Vec<i64>, target: String) -> Res<u64> {
-    let rows = locate(&ctx, &ids);
-    if rows.is_empty() {
-        return Err(crate::i18n::t("邮件还在同步中，稍后再试", "Still syncing. Try again in a moment.").into());
-    }
     let what = match target.as_str() { "archive" => crate::i18n::t("归档", "Archive"), "trash" => crate::i18n::t("已删除", "Trash"), "junk" => crate::i18n::t("垃圾邮件", "Junk"), "inbox" => crate::i18n::t("收件箱", "Inbox"), _ => crate::i18n::t("目标文件夹", "target folder") };
     // (账号, 原路径, 目标路径, 目标文件夹 id, [(邮件 id, uid)])
     let mut plan: Vec<(i64, String, String, i64, Vec<(i64, u32)>)> = vec![];
     let mut moving = vec![];
     {
         let st = ctx.store.lock().unwrap();
+        // 查位置和标记移动共用同一把锁，重复请求不能再次排队移动同一封邮件。
+        let rows = locate_in(&st, &ids);
+        if rows.is_empty() {
+            return Err(crate::i18n::t("邮件还在同步中，稍后再试", "Still syncing. Try again in a moment.").into());
+        }
         let mut by: std::collections::BTreeMap<(i64, String), Vec<(i64, u32)>> = Default::default();
         for (id, acc, path, uid) in &rows {
             by.entry((*acc, path.clone())).or_default().push((*id, *uid));
@@ -776,6 +777,9 @@ pub(crate) async fn move_to_inner(ctx: Arc<Ctx>, ids: Vec<i64>, target: String) 
         }
         for id in &moving {
             st.conn.execute("UPDATE messages SET moving=1 WHERE id=?", [id]).map_err(e)?;
+        }
+        for (acc, ..) in &plan {
+            st.refresh_counts(*acc).map_err(e)?;
         }
     }
     let token = {
@@ -823,9 +827,14 @@ pub(crate) fn undo_secs(ctx: &Ctx) -> u64 {
 pub async fn undo_move(ctx: State<'_, Arc<Ctx>>, token: u64) -> Res<bool> {
     let Some(ids) = ctx.pending_moves.lock().unwrap().remove(&token) else { return Ok(false) };
     let st = ctx.store.lock().unwrap();
+    let mut accounts = std::collections::HashSet::new();
     for id in ids {
         st.conn.execute("UPDATE messages SET moving=0 WHERE id=?", [id]).map_err(e)?;
+        if let Ok(acc) = st.conn.query_row("SELECT account_id FROM messages WHERE id=?", [id], |r| r.get::<_, i64>(0)) {
+            accounts.insert(acc);
+        }
     }
+    for acc in accounts { st.refresh_counts(acc).map_err(e)?; }
     drop(st);
     changed(&ctx);
     Ok(true)
@@ -2154,6 +2163,25 @@ mod mcp_scope_tests {
         assert_eq!(count(&st, &q(Scope(Some(vec![])))), 0);
         drop(st);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn pending_moves_cannot_be_queued_twice_and_folder_counts_match_lists() {
+        let (d, st) = two_accounts("pending-move");
+        let id = st.conn.query_row("SELECT MIN(id) FROM messages WHERE account_id=1", [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(locate_in(&st, &[id]).len(), 1);
+        st.conn.execute("UPDATE messages SET moving=1 WHERE id=?", [id]).unwrap();
+        st.refresh_counts(1).unwrap();
+        assert!(locate_in(&st, &[id]).is_empty(), "撤销窗口内不能再次排队移动");
+        let query = q(Scope(Some(vec![1])));
+        assert_eq!(count(&st, &query), 2);
+        assert_eq!(st.conn.query_row("SELECT total FROM folders WHERE id=1", [], |r| r.get::<_, i64>(0)).unwrap(), count(&st, &query));
+        st.conn.execute("UPDATE messages SET moving=0 WHERE id=?", [id]).unwrap();
+        st.refresh_counts(1).unwrap();
+        assert_eq!(locate_in(&st, &[id]).len(), 1, "撤销后重新允许操作");
+        assert_eq!(st.conn.query_row("SELECT unread FROM folders WHERE id=1", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        drop(st);
+        let _ = std::fs::remove_dir_all(d);
     }
 
     /// 显式点名不可读的账号时，结果必须和「这个账号没有邮件」一模一样：total=0，不是报错

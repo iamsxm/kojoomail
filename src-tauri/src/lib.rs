@@ -150,6 +150,13 @@ pub fn run() {
             st.conn.execute("UPDATE messages SET moving=0 WHERE moving=1", [])?;
             // 上次退出时服务器那边还没移动完的：挪回原处，同步时按服务器实际情况对账
             st.conn.execute("UPDATE messages SET folder_id=orig_folder, uid=orig_uid, orig_folder=NULL, orig_uid=NULL WHERE uid<0 AND orig_folder IS NOT NULL", [])?;
+            // 可见性、文件夹位置恢复后立即重算，避免旧版本留下的侧栏计数持续到下一次同步。
+            let accounts = {
+                let mut q = st.conn.prepare("SELECT id FROM accounts")?;
+                let ids = q.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
+                ids
+            };
+            for account in accounts { st.refresh_counts(account)?; }
             let (ai_tx, ai_rx) = mpsc::unbounded_channel();
             let (nm_tx, mut nm_rx) = mpsc::unbounded_channel::<Vec<i64>>();
             let http = reqwest::Client::builder().pool_idle_timeout(std::time::Duration::from_secs(30)).pool_max_idle_per_host(1).build()?;
