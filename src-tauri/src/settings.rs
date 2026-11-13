@@ -34,6 +34,8 @@ pub struct Settings {
     /// skip_bulk | all | important
     pub ai_scope: String,
     pub ai_daily_limit: i64,
+    /// 用户自己写的补充要求（语气、侧重点、称呼）：追加到批注、起草回复、跟进邮件的提示词末尾；空=不加
+    pub ai_custom: String,
     /// 界面语言：auto（跟随系统）| zh | en
     pub language: String,
     /// MCP 总开关。关着的时候连端口都不 bind，没有任何后台任务
@@ -49,6 +51,12 @@ pub struct Settings {
     pub mcp_body_max_chars: i64,
     /// 是否允许 MCP 调用会烧 AI 额度的工具
     pub mcp_allow_ai: bool,
+    /// 按会话显示：同一来回的邮件在列表里合成一行（默认关）
+    pub conversation_view: bool,
+    /// 代理：system 跟随系统 | off 不用代理 | custom 自定义
+    pub proxy_mode: String,
+    /// 自定义代理的 主机:端口（只支持 HTTP 代理）
+    pub proxy_addr: String,
 }
 
 impl Default for Settings {
@@ -75,6 +83,7 @@ impl Default for Settings {
             ai_auto: true,
             ai_scope: "skip_bulk".into(),
             ai_daily_limit: 200,
+            ai_custom: String::new(),
             language: "auto".into(),
             mcp_enabled: false,
             mcp_read: true,
@@ -85,6 +94,9 @@ impl Default for Settings {
             mcp_port: if std::env::var_os("KOJOOMAIL_DATA").is_some() { 0 } else { 47821 },
             mcp_body_max_chars: 8000,
             mcp_allow_ai: false,
+            conversation_view: false,
+            proxy_mode: "system".into(),
+            proxy_addr: String::new(),
         }
     }
 }
@@ -98,6 +110,7 @@ pub fn load(ctx: &Ctx) -> Settings {
         st.setting("app").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
     };
     crate::i18n::apply(&s.language);
+    crate::net::configure(&s.proxy_mode, &s.proxy_addr);
     *ctx.settings_cache.lock().unwrap() = Some(s.clone());
     s
 }
@@ -105,11 +118,22 @@ pub fn load(ctx: &Ctx) -> Settings {
 pub fn save(ctx: &Ctx, s: &Settings) -> anyhow::Result<()> {
     let mut s = s.clone();
     clamp(&mut s);
+    if !["system", "off", "custom"].contains(&s.proxy_mode.as_str()) {
+        s.proxy_mode = "system".into();
+    }
+    s.proxy_addr = s.proxy_addr.trim().to_string();
+    if s.proxy_mode == "custom" {
+        match crate::net::clean_addr(&s.proxy_addr) {
+            Some(a) => s.proxy_addr = a,
+            None => anyhow::bail!(crate::i18n::t("代理地址要写成 主机:端口，比如 127.0.0.1:7890（只支持 HTTP 代理）", "Enter the proxy as host:port, for example 127.0.0.1:7890 (HTTP proxies only)")),
+        }
+    }
     {
         let st = ctx.store.lock().unwrap();
         st.set_setting("app", &serde_json::to_string(&s)?)?;
     }
     crate::i18n::apply(&s.language);
+    crate::net::configure(&s.proxy_mode, &s.proxy_addr);
     *ctx.settings_cache.lock().unwrap() = Some(s);
     Ok(())
 }
@@ -118,6 +142,7 @@ fn clamp(s: &mut Settings) {
     s.font_size = s.font_size.clamp(12.0, 16.0);
     s.ai_daily_limit = s.ai_daily_limit.clamp(0, 5000);
     s.undo_send_secs = s.undo_send_secs.min(30);
+    s.ai_custom = s.ai_custom.trim().chars().take(500).collect();
     if !["auto", "zh", "en"].contains(&s.language.as_str()) {
         s.language = "auto".into();
     }
@@ -193,5 +218,9 @@ mod tests {
         assert!(!s.mcp_send);
         assert_eq!(s.mcp_send_mode, "draft");
         assert!(!s.mcp_allow_ai);
+        assert!(!s.conversation_view);
+        assert_eq!(s.proxy_mode, "system");
+        assert!(s.proxy_addr.is_empty());
+        assert!(s.ai_custom.is_empty());
     }
 }

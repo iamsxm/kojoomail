@@ -8,13 +8,14 @@ import { copyText, mcpJson, mcpToml } from '../lib/mcp'
 import { ACCOUNT_COLORS, ago } from '../lib/format'
 import { MdView, Seg, Switch } from '../ui'
 import { GuideContent } from './Guide'
+import { Rules } from './Rules'
 import { DATA_DIR, IS_MAC, TRAY, VAULT, keyText } from '../lib/platform'
 import { L, catLabel } from '../lib/i18n'
 
 // 侧栏分组，和主界面侧栏一样带小标题
 const GROUPS: [string, [string, string, string][]][] = [
   [L('基本', 'Basics'), [['general', 'gear', L('通用', 'General')], ['accounts', 'mail', L('账号', 'Accounts')], ['ai', 'sparkle', L('AI 与模型', 'AI & models')], ['mcp', 'external', L('MCP 服务', 'MCP server')]]],
-  [L('提醒与操作', 'Alerts & controls'), [['notify', 'bell', L('通知与隐私', 'Notifications & privacy')], ['keys', 'keyboard', L('快捷键', 'Shortcuts')]]],
+  [L('提醒与操作', 'Alerts & controls'), [['notify', 'bell', L('通知与隐私', 'Notifications & privacy')], ['rules', 'sliders', L('邮件规则', 'Mail rules')], ['keys', 'keyboard', L('快捷键', 'Shortcuts')]]],
   [L('帮助', 'Help'), [['guide', 'doc', L('使用教程', 'Guide')], ['about', 'info', L('关于', 'About')]]],
 ]
 
@@ -45,6 +46,7 @@ export default function SettingsPage() {
           {tab === 'ai' && <Ai />}
           {tab === 'mcp' && <Mcp />}
           {tab === 'notify' && <NotifyPrivacy />}
+          {tab === 'rules' && <Rules />}
           {tab === 'keys' && <Keys />}
           {tab === 'guide' && <><Head title={L('使用教程', 'Guide')} lead={L('五分钟了解 Kojoo Mail 怎么用。', 'Learn Kojoo Mail in five minutes.')} /><GuideContent /></>}
           {tab === 'about' && <About />}
@@ -60,6 +62,12 @@ function General() {
   const s = useApp()
   const st = s.settings!
   const save = s.saveSettings
+  const [pm, setPm] = useState(st.proxyMode ?? 'system')
+  const [pa, setPa] = useState(st.proxyAddr ?? '')
+  const commit = () => {
+    const a = pa.trim()
+    if (a && (st.proxyMode !== 'custom' || a !== st.proxyAddr)) save({ proxyMode: 'custom', proxyAddr: a })
+  }
   return (
     <>
       <Head title={L('通用', 'General')} lead={L('语言、外观、字号和启动方式。', 'Language, appearance, text size and startup.')} />
@@ -106,6 +114,7 @@ function General() {
           </div>
           <div className="gr"><span className="lbl">{L('信息密度', 'Density')}</span><Seg small value={st.density} onChange={(v) => save({ density: v })} options={[['compact', L('紧凑', 'Compact')], ['standard', L('标准', 'Default')], ['cozy', L('宽松', 'Comfortable')]]} /></div>
           <div className="gr"><div><div className="lbl">{L('邮件标题用宋体', 'Serif email subjects')}</div><div className="sub">{L('读信时的标题更有阅读感', 'A more bookish look for subjects when reading')}</div></div><Switch label={L('邮件标题用宋体', 'Serif email subjects')} on={st.serifTitles} onChange={(v) => save({ serifTitles: v })} /></div>
+          <div className="gr"><div><div className="lbl">{L('按会话显示', 'Conversation view')}</div><div className="sub">{L('同一来回的邮件在列表里合成一行，点开按时间看整串；回复、删除等仍只针对单封', 'Replies in the same conversation share one row in the list; open it to read the whole exchange in order. Reply, delete and other actions still apply to one email at a time')}</div></div><Switch label={L('按会话显示', 'Conversation view')} on={!!st.conversationView} onChange={(v) => save({ conversationView: v })} /></div>
         </div>
       </section>
       <section>
@@ -118,6 +127,27 @@ function General() {
               <select className="field" style={{ width: 'auto', height: 28, fontSize: 12.5 }} value={st.defaultAccount ?? s.accounts[0]?.id} onChange={(e) => save({ defaultAccount: Number(e.target.value) })}>
                 {s.accounts.map((a) => <option key={a.id} value={a.id}>{a.label ? `${a.label} · ${a.email}` : a.email}</option>)}
               </select>
+            </div>
+          )}
+        </div>
+      </section>
+      <section>
+        <h2 className="gh">{L('网络', 'Network')}</h2>
+        <div className="group sq">
+          <div className="gr"><div><div className="lbl">{L('代理', 'Proxy')}</div><div className="sub">{L('收信和发信走哪条路；国内用 Gmail 需要代理。已连上的账号下次重新连接时生效', 'How mail connections are made; Gmail in mainland China needs a proxy. Accounts already connected pick this up the next time they reconnect')}</div></div>
+            <Seg small value={pm} options={[['system', L('跟随系统', 'System')], ['off', L('不用代理', 'None')], ['custom', L('自定义', 'Custom')]]} onChange={(v) => {
+              if (v === 'custom') {
+                setPm('custom')
+                if (pa.trim()) save({ proxyMode: 'custom', proxyAddr: pa.trim() })
+              } else {
+                setPm(v)
+                save({ proxyMode: v })
+              }
+            }} />
+          </div>
+          {pm === 'custom' && (
+            <div className="gr"><div><div className="lbl">{L('代理地址', 'Proxy address')}</div><div className="sub">{L('HTTP 代理的 主机:端口，比如 Clash 的 127.0.0.1:7890；不支持 SOCKS。代理连不上时会直接提示，不会自动改成直连', 'host:port of an HTTP proxy, e.g. 127.0.0.1:7890 for Clash; SOCKS is not supported. If the proxy is unreachable you get an error instead of a silent direct connection')}</div></div>
+              <input className="field" style={{ width: 190, height: 28, fontSize: 12.5 }} placeholder="127.0.0.1:7890" spellCheck={false} aria-label={L('代理地址', 'Proxy address')} value={pa} onChange={(e) => setPa(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
             </div>
           )}
         </div>
@@ -232,6 +262,7 @@ function Ai() {
   const [test, setTest] = useState<string>('')
   const [base, setBase] = useState(st.aiBase)
   const [models, setModels] = useState({ aiModel: st.aiModel, aiModelFine: st.aiModelFine, aiModelBackup: st.aiModelBackup })
+  const [custom, setCustom] = useState(st.aiCustom ?? '')
   const [choices, setChoices] = useState<string[]>([])
   // 以存下来的选择为准；早期没存选择的按地址猜
   const preset = AI_PRESETS.find((p) => p.id === st.aiProvider) ?? AI_PRESETS.find((p) => p.base && p.base === st.aiBase) ?? (st.aiBase ? CUSTOM : undefined)
@@ -350,6 +381,16 @@ function Ai() {
               <input type="number" className="field inset num" style={{ width: 90, textAlign: 'right' }} min={0} max={5000} value={st.aiDailyLimit} onChange={(e) => s.saveSettings({ aiDailyLimit: Number(e.target.value) || 0 })} />
               <span style={{ fontSize: 12.5, color: 'var(--sec)' }}>{L(`封 · 今天已用 ${s.aiUsedToday}`, `emails · ${s.aiUsedToday} used today`)}</span>
             </div>
+          </div>
+        </div>
+      </section>
+      <section>
+        <h2 className="gh">{L('自定义要求', 'Custom instructions')}</h2>
+        <div className="group sq">
+          <div style={{ padding: '10px 14px 12px' }}>
+            <div className="sub" style={{ marginBottom: 8 }}>{L('写下你的偏好，比如回复的语气、称呼习惯、更关注哪类信息。AI 写批注、起草回复和跟进邮件时会参考；空着就和原来一样。对之后分析的邮件生效，已有批注点「重新生成」才会更新。', 'Describe your preferences, such as reply tone, how to address people, or what to pay attention to. AI uses them when writing notes, drafting replies and follow-ups; leave empty to keep the default behavior. Applies to mail analyzed from now on; click Regenerate to update existing notes.')}</div>
+            <textarea className="field" rows={4} maxLength={500} aria-label={L('自定义要求', 'Custom instructions')} style={{ height: 'auto', padding: '8px 12px', resize: 'vertical', lineHeight: 1.5, width: '100%' }} value={custom} onChange={(e) => setCustom(e.target.value)} onBlur={() => { if (custom.trim() !== (st.aiCustom ?? '')) s.saveSettings({ aiCustom: custom.trim() }) }} placeholder={L('例如：回复尽量简短，称呼对方用「您」；摘要里把金额和截止日期写在最前面', 'Example: keep replies short and polite; put amounts and deadlines first in the summary')} />
+            <div className="sub" style={{ marginTop: 6, textAlign: 'right' }}>{custom.length} / 500</div>
           </div>
         </div>
       </section>
