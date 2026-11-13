@@ -119,3 +119,16 @@ test('collector renames Windows installer without changing its signature', (t) =
   assert.deepEqual(readFileSync(join(out, name)), data)
   verifySignature(data, readFileSync(join(out, name + '.sig'), 'utf8').trim(), key.pubkey)
 })
+
+test('macOS preview collection only needs dmg, while a release requires the signed updater', (t) => {
+  const root = configFixture(t), target = 'aarch64-apple-darwin'
+  const dir = join(root, 'src-tauri/target', target, 'release/bundle/dmg')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'Kojoo Mail_aarch64.dmg'), 'disk image')
+  const version = checkVersions(root)
+  const out = collect(target, false, root, 'a'.repeat(40))
+  const record = JSON.parse(readFileSync(join(out, 'record-darwin-aarch64.json'), 'utf8'))
+  assert.equal(record.signed, false)
+  assert.deepEqual(Object.keys(record.files), assetNames(version, target, false).files)
+  assert.throws(() => collect(target, true, root, 'a'.repeat(40)))
+})

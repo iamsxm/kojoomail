@@ -25,7 +25,7 @@ gh pr create --repo iamsxm/kojoomail --base main
 | 工作流 | 触发 | 结果 |
 |---|---|---|
 | `ci` | PR、main 和常用开发分支 push；也可被 release 复用 | 前端构建/测试、版本配置校验、Windows x64 与 macOS arm64/x64 Rust workspace 测试；汇总为 `required` |
-| `build-desktop` | 手动运行、`ci/**` 分支 push，或 release 调用 | 构建对应架构 MCP 代理、主程序和安装包，校验/归集后上传 Actions artifacts；普通运行不签 updater、不公开 Release |
+| `build-desktop` | 手动运行、`ci/**` 分支 push，或 release 调用 | 构建对应架构 MCP 代理、主程序和安装包，校验/归集后上传 Actions artifacts；普通运行不签 updater；手动 `signed=true` 可验证更新签名，均不公开 Release |
 | `release` | 推送 `v*` 标签；手动输入已有标签可重试 | 校验标签及 main ancestry → 全量 CI → 三平台签名构建 → 汇总验签 → 上传 → 自动公开 |
 | `upstream-report` | 手动 | 抓取官方 main，生成未合入提交、文件、重点共享文件报告；不自动合并 MCP |
 
@@ -108,6 +108,7 @@ git push fork v0.4.0
 5. 只有 publish job 有 `contents: write`。构建和测试任务只读；PR 不接触发布私钥。
 6. publish 在全部平台成功后创建临时草稿并上传全部文件，上传成功立即公开。临时草稿是防止半成品公开的技术步骤，无需人工点击发布。上传失败只留下可恢复的草稿。
 7. alpha/beta/rc 标签公开为 prerelease，并设置 `latest=false`；不会替换稳定版自动更新入口。
+8. 正式发布按仓库串行执行，避免两个版本同时上传后让较旧版本覆盖 latest；公开前再次检查当前 latest。
 
 安装/更新产物：
 

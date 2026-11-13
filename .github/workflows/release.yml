@@ -14,7 +14,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  # 串行发布不同版本，避免较早版本后完成并覆盖较新版本的 latest。
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
