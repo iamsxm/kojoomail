@@ -517,7 +517,7 @@ impl Mail {
 
     #[tool(
         name = "mail_draft_save",
-        description = "Save a draft into the user's Drafts folder. NOTHING IS SENT. Use mail_reply / mail_forward instead when answering an existing message - they fill in recipients, subject prefix, quoted text and signature. accountId defaults to the user's default mailbox. attachments are absolute local file paths the user gave you; they are referenced, not copied. Pass id to update an existing draft from mail_draft_list.",
+        description = "Save a draft into the user's Drafts folder. NOTHING IS SENT. Use mail_reply / mail_forward instead when answering an existing message - they fill in recipients, subject prefix, quoted text and signature. accountId defaults to the user's default mailbox for new drafts. Pass id to update an existing draft from mail_draft_list; omitted fields retain their saved values, including accountId. Pass [] to clear recipients or attachments, or an empty string to clear subject/body. attachments are absolute local file paths the user gave you; they are referenced, not copied.",
         annotations(read_only_hint = false, destructive_hint = false, open_world_hint = false)
     )]
     async fn mail_draft_save(&self, Parameters(p): Parameters<ComposeArgs>) -> Out {
@@ -624,10 +624,13 @@ struct Outbound {
 
 impl Mail {
     fn outbound_new(&self, p: &ComposeArgs) -> Result<Outbound, CallToolResult> {
+        // 先判草稿权限，再恢复省略的字段；恢复出的原邮件引用也必须重新检查权限。
+        check_refs(self.ctx(), p.id, p.reply_msg)?;
+        let p = merge_draft_fields(&self.ctx().store.lock().unwrap(), p)?;
         let account = self.sending_account(p.account_id)?;
         check_refs(self.ctx(), p.id, p.reply_msg)?;
         let content = compose::new_content(self.ctx(), account, p.id, p.body.as_deref()).map_err(fail)?;
-        outbound(account, p, Some(content))
+        outbound(account, &p, Some(content))
     }
 
     /// 发信账号：显式指定 > 设置里的默认账号 > 第一个可发的账号。都必须过发信轴
@@ -657,14 +660,14 @@ impl Mail {
         }
         let args = ComposeArgs {
             account_id: Some(account),
-            to: as_rcpts(&p.to),
-            cc: as_rcpts(&p.cc),
-            bcc: vec![],
+            to: Some(as_rcpts(&p.to)),
+            cc: Some(as_rcpts(&p.cc)),
+            bcc: Some(vec![]),
             subject: Some(p.subject.clone()),
             body: Some(p.body.clone()),
             reply_msg: p.reply_msg,
             mode: Some(p.mode.clone()),
-            attachments: attachments.to_vec(),
+            attachments: Some(attachments.to_vec()),
             id: None,
         };
         let ob = outbound(account, &args, Some(p.content))?;
@@ -865,30 +868,27 @@ pub struct TodoIdArgs {
 }
 
 /// 收件人。不给 mime::Addr 加 JsonSchema derive：那会级联到 mime.rs 整条解析链
-#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Rcpt {
     pub email: String,
     pub name: Option<String>,
 }
 
-#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposeArgs {
     pub account_id: Option<i64>,
-    #[serde(default)]
-    pub to: Vec<Rcpt>,
-    #[serde(default)]
-    pub cc: Vec<Rcpt>,
-    #[serde(default)]
-    pub bcc: Vec<Rcpt>,
+    /// Omit to retain existing recipients; pass [] to clear them.
+    pub to: Option<Vec<Rcpt>>,
+    pub cc: Option<Vec<Rcpt>>,
+    pub bcc: Option<Vec<Rcpt>>,
     pub subject: Option<String>,
     /// Authored body in Markdown with safe HTML supported. The account signature is added automatically.
     pub body: Option<String>,
     pub reply_msg: Option<i64>,
     pub mode: Option<String>,
-    #[serde(default)]
-    pub attachments: Vec<String>,
+    pub attachments: Option<Vec<String>>,
     pub id: Option<i64>,
 }
 
@@ -1026,11 +1026,46 @@ fn check_refs(ctx: &Ctx, draft_id: Option<i64>, reply_msg: Option<i64>) -> Resul
     Ok(())
 }
 
+/// MCP 草稿编辑采用补丁语义；前端 save_draft 仍然保存完整快照，支持主动清空字段。
+/// 调用方必须先检查草稿的发信权限。
+fn merge_draft_fields(st: &crate::store::Store, p: &ComposeArgs) -> Result<ComposeArgs, CallToolResult> {
+    let mut merged = p.clone();
+    if let Some(id) = p.id {
+        let saved = st.conn.query_row(
+            "SELECT account_id, to_json, cc_json, bcc_json, subject, reply_msg, mode, att_json FROM drafts WHERE id=?",
+            [id],
+            |r| {
+                let array = |i| -> rusqlite::Result<Value> {
+                    let raw: String = r.get(i)?;
+                    Ok(serde_json::from_str(&raw).unwrap_or_else(|_| json!([])))
+                };
+                Ok(json!({
+                    "accountId": r.get::<_, Option<i64>>(0)?,
+                    "to": array(1)?, "cc": array(2)?, "bcc": array(3)?,
+                    "subject": r.get::<_, String>(4)?,
+                    "replyMsg": r.get::<_, Option<i64>>(5)?,
+                    "mode": r.get::<_, String>(6)?, "attachments": array(7)?,
+                }))
+            },
+        ).map_err(|_| fail(mcp_scope::gone()))?;
+        let saved: ComposeArgs = serde_json::from_value(saved).map_err(|e| fail(e.to_string()))?;
+        merged.account_id = merged.account_id.or(saved.account_id);
+        merged.to = merged.to.or(saved.to);
+        merged.cc = merged.cc.or(saved.cc);
+        merged.bcc = merged.bcc.or(saved.bcc);
+        merged.subject = merged.subject.or(saved.subject);
+        merged.reply_msg = merged.reply_msg.or(saved.reply_msg);
+        merged.mode = merged.mode.or(saved.mode);
+        merged.attachments = merged.attachments.or(saved.attachments);
+    }
+    Ok(merged)
+}
+
 /// 只组装，不判权限：`id` / `replyMsg` 原样进 DraftIn，调用方必须先确认它们属于授权账号
 fn outbound(account: i64, p: &ComposeArgs, content: Option<crate::html::MailContent>) -> Result<Outbound, CallToolResult> {
-    let to = rcpts(&p.to)?;
-    let cc = rcpts(&p.cc)?;
-    let bcc = rcpts(&p.bcc)?;
+    let to = rcpts(p.to.as_deref().unwrap_or_default())?;
+    let cc = rcpts(p.cc.as_deref().unwrap_or_default())?;
+    let bcc = rcpts(p.bcc.as_deref().unwrap_or_default())?;
     let subject = header_safe(p.subject.as_deref().unwrap_or(""));
     let content = content.unwrap_or_else(|| crate::html::MailContent { body: p.body.clone().unwrap_or_default(), ..Default::default() });
     let body = crate::html::render(&content).text;
@@ -1040,6 +1075,7 @@ fn outbound(account: i64, p: &ComposeArgs, content: Option<crate::html::MailCont
     }
     let files: Vec<(String, u64)> = p
         .attachments
+        .as_deref().unwrap_or_default()
         .iter()
         .map(|path| {
             let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
@@ -1059,7 +1095,7 @@ fn outbound(account: i64, p: &ComposeArgs, content: Option<crate::html::MailCont
         "content": content,
         "replyMsg": p.reply_msg,
         "mode": mode,
-        "attachments": p.attachments,
+        "attachments": p.attachments.as_deref().unwrap_or_default(),
     }))
     .map_err(|e| fail(e.to_string()))?;
     Ok(Outbound { draft, account, draft_id: p.id, reply_msg: p.reply_msg, to, cc, bcc, subject, body, files })
@@ -1247,6 +1283,69 @@ mod tests {
     fn unknown_compose_modes_are_refused() {
         let p: ComposeArgs = serde_json::from_value(json!({ "mode": "sendNow" })).unwrap();
         assert!(outbound(1, &p, None).is_err());
+    }
+
+    #[test]
+    fn editing_only_draft_body_preserves_fields_and_explicit_empty_values_clear_them() {
+        let d = std::env::temp_dir().join(format!("kjm-draft-patch-{}", std::process::id()));
+        let st = crate::store::Store::open(&d).unwrap();
+        for id in [7, 8] {
+            st.conn.execute("INSERT INTO accounts(id,email,username,imap_host,imap_port,smtp_host,smtp_port,created,signature) VALUES(?1,?2,'me','h',993,'h',465,0,'**签名**')", rusqlite::params![id,format!("me{id}@example.com")]).unwrap();
+        }
+        let content = crate::html::MailContent {
+            body: "原始 **Markdown**".into(), signature: "**签名**".into(),
+            quote: Some(crate::html::MailQuote { header:"原邮件".into(),text:"原文".into(),html:"<p>原文</p>".into(),reply:true }),
+        };
+        let draft: commands::DraftIn = serde_json::from_value(json!({
+            "accountId":7,"to":[{"name":"收件人","email":"to@example.com"}],
+            "cc":[{"name":"","email":"cc@example.com"}],"bcc":[{"name":"","email":"bcc@example.com"}],
+            "subject":"Re: 报价","body":"","content":content,"mode":"reply","replyMsg":42,
+            "attachments":["C:/tmp/quote.pdf"],
+        })).unwrap();
+        let id = commands::save_draft_in(&st, draft).unwrap();
+        let patch: ComposeArgs = serde_json::from_value(json!({"id":id,"body":"新的 **正文**"})).unwrap();
+        assert!(patch.to.is_none() && patch.attachments.is_none());
+        let merged = merge_draft_fields(&st, &patch).unwrap();
+        assert_eq!(merged.account_id, Some(7), "省略账号不能切换到默认账号");
+        let prepared = compose::content_in(&st, 7, Some(id), merged.body.as_deref()).unwrap();
+        let ob = outbound(7, &merged, Some(prepared)).unwrap();
+        assert_eq!(ob.to[0].email,"to@example.com");
+        assert_eq!(ob.to[0].name,"收件人");
+        assert_eq!(ob.cc[0].email,"cc@example.com");
+        assert_eq!(ob.bcc[0].email,"bcc@example.com");
+        assert_eq!(ob.subject,"Re: 报价");
+        assert_eq!(ob.reply_msg,Some(42));
+        commands::save_draft_in(&st, ob.draft).unwrap();
+        let listed = commands::list_drafts_in(&st).unwrap();
+        let saved = serde_json::to_value(&listed[0]).unwrap();
+        assert_eq!(saved["mode"],"reply");
+        assert_eq!(saved["attachments"],json!(["C:/tmp/quote.pdf"]));
+        assert_eq!(saved["content"]["body"],"新的 **正文**");
+        assert_eq!(saved["content"]["quote"],json!(content.quote));
+        assert_eq!(saved["content"]["signature"],"**签名**");
+
+        // 完全省略 body 时保留原 Markdown，允许只改主题。
+        let patch = serde_json::from_value(json!({"id":id,"subject":"新主题"})).unwrap();
+        let merged = merge_draft_fields(&st, &patch).unwrap();
+        let prepared = compose::content_in(&st, 7, Some(id), merged.body.as_deref()).unwrap();
+        assert_eq!(prepared.body,"新的 **正文**");
+        assert_eq!(outbound(7, &merged, Some(prepared)).unwrap().subject,"新主题");
+
+        let patch = serde_json::from_value(json!({"id":id,"accountId":8,"to":[],"cc":[],"bcc":[],"subject":"","body":"","attachments":[]})).unwrap();
+        let merged = merge_draft_fields(&st, &patch).unwrap();
+        assert_eq!(merged.account_id,Some(8));
+        let prepared = compose::content_in(&st, 8, Some(id), merged.body.as_deref()).unwrap();
+        assert!(prepared.body.is_empty());
+        let ob = outbound(8, &merged, Some(prepared)).unwrap();
+        assert!(ob.to.is_empty() && ob.cc.is_empty() && ob.bcc.is_empty() && ob.subject.is_empty() && ob.files.is_empty());
+        commands::save_draft_in(&st, ob.draft).unwrap();
+        let saved = serde_json::to_value(&commands::list_drafts_in(&st).unwrap()[0]).unwrap();
+        for field in ["to","cc","bcc","attachments"] { assert_eq!(saved[field],json!([]),"{field}"); }
+        assert_eq!(saved["subject"],"");
+        assert_eq!(saved["accountId"],8);
+        assert!(merge_draft_fields(&st, &serde_json::from_value(json!({"id":999})).unwrap()).is_err());
+        drop(st);
+        let _ = std::fs::remove_dir_all(d);
     }
 
     /// DraftIn 是从 JSON 拼的，键名写错会被 serde 静默丢掉。
