@@ -2,6 +2,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { L } from './i18n'
+import type { MailContent, RenderedMail } from './mail-content'
 
 export type Addr = { name: string; email: string }
 export type Account = {
@@ -60,7 +61,7 @@ export type Todo = {
 }
 export type Att = { idx: number; name: string; size: number; mime: string; inline: boolean }
 export type MsgFull = MsgLite & { cc: Addr[]; replyTo: string; msgid: string; refs: string; inReplyTo: string; text: string; html: string; atts: Att[]; ai: AiResult | null; aiPending: boolean; todos: Todo[] }
-export type Draft = { id: number; accountId: number | null; to: Addr[]; cc: Addr[]; bcc: Addr[]; subject: string; body: string; replyMsg: number | null; mode: string; updated: number; attachments: string[] }
+export type Draft = { id: number; accountId: number | null; to: Addr[]; cc: Addr[]; bcc: Addr[]; subject: string; body: string; content: MailContent; replyMsg: number | null; mode: string; updated: number; attachments: string[] }
 export type ListQuery = { view: 'all' | 'important' | 'later' | 'bills' | 'followup' | 'sent' | 'folder'; accountId?: number | null; folderId?: number | null; filter?: string; search?: string; maxId?: number | null; offset: number; limit: number }
 export type DigestItem = { id: number; accountId: number; who: string; subject: string; summary: string; date: number; seen: boolean; high: boolean }
 export type DigestTodo = { id: number; msgId: number | null; text: string; due: number | null }
@@ -73,7 +74,7 @@ export type AccountIn = {
   imapHost: string; imapPort: number; smtpHost: string; smtpPort: number; smtpTls: boolean; saveSent: boolean
   oauthTicket?: string
 }
-export type DraftIn = { id?: number | null; accountId: number; to: Addr[]; cc: Addr[]; bcc: Addr[]; subject: string; body: string; html: string; replyMsg?: number | null; mode: string; attachments: string[] }
+export type DraftIn = { id?: number | null; accountId: number; to: Addr[]; cc: Addr[]; bcc: Addr[]; subject: string; body: string; content: MailContent; replyMsg?: number | null; mode: string; attachments: string[] }
 
 const call = <T,>(cmd: string, args?: Record<string, unknown>) => invoke<T>(cmd, args)
 
@@ -109,6 +110,7 @@ export const api = {
   removeAccount: (id: number) => call<void>('remove_account', { id }),
   retryAccount: (id: number) => call<void>('retry_account', { id }),
   send: (d: DraftIn) => call<void>('send_mail', { d }),
+  renderMail: (content: MailContent) => call<RenderedMail>('render_mail', { content }),
   saveDraft: (d: DraftIn) => call<number>('save_draft', { d }),
   drafts: () => call<Draft[]>('list_drafts'),
   deleteDraft: (id: number) => call<void>('delete_draft', { id }),

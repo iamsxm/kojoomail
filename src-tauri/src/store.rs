@@ -137,7 +137,11 @@ fn v2_translations(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
          );",
     )
 }
-const MIGRATIONS: &[Step] = &[v2_translations];
+/// 数据版本 3：草稿分别保存 Markdown 正文、签名和原文引用；旧草稿的 body 保持可读。
+fn v3_draft_content(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch("ALTER TABLE drafts ADD COLUMN content_json TEXT;")
+}
+const MIGRATIONS: &[Step] = &[v2_translations, v3_draft_content];
 /// 当前代码对应的数据版本
 const LATEST: i64 = MIGRATIONS.len() as i64 + 1;
 
@@ -368,6 +372,26 @@ mod migrate_tests {
         let st = Store::open(&d).unwrap();
         st.conn.query_row("SELECT auth, focus, ai_level FROM accounts LIMIT 1", [], |_| Ok(())).optional().unwrap();
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn structured_draft_migration_preserves_version_two_drafts() {
+        let d = tmp("draft-content");
+        std::fs::create_dir_all(&d).unwrap();
+        {
+            let c = Connection::open(d.join("kojoomail.db")).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            c.execute_batch("PRAGMA user_version = 2").unwrap();
+            c.execute("INSERT INTO drafts (body, mode, updated) VALUES (?, 'reply', 0)", ["正文\n\n-- \n签名\n\nOn 2026-11-13, A wrote:\n> 原文"]).unwrap();
+        }
+        let st = Store::open(&d).unwrap();
+        let (body, content): (String, Option<String>) = st.conn.query_row("SELECT body,content_json FROM drafts", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert!(body.contains("原文"));
+        assert!(content.is_none());
+        assert!(d.join("kojoomail.db.bak-v2").exists());
+        assert_eq!(crate::html::restore_legacy(&body, "签名").body, "正文");
+        drop(st);
+        let _ = std::fs::remove_dir_all(d);
     }
 
     /// 老账号升级后：读默认开，写和发默认关，必须逐账号显式授权

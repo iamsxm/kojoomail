@@ -2,6 +2,8 @@
 
 | 文件 | 用途 |
 |---|---|
+| `mail-preview.test.mjs` | 共享后端渲染的异步预览：请求顺序、内容变化、失败与卸载；`npm test` 执行 |
+| `../src-tauri/src/html.rs`、`mcp_tools.rs` 的渲染测试 | Markdown/HTML/CSS 清理、签名/引用隔离，以及普通发送/MCP/预览/草稿/MIME 一致性；设计说明见 `../docs/mail-rendering.md` |
 | `../src-tauri` 里 `cargo test --lib` | 单元测试：HTML 转文本、文件夹名解码、注入过滤、邮件解析、JSON 容错、一键登录流程（假登录服务器）、代理隧道 |
 | `e2e/flow.js` | 端到端：启动真实程序 → 添加账号 → 读信 → AI → 发信给自己 → 归档撤销 → 右键 → 待办 → 深色 → 内存 → 删账号 |
 | `e2e/mem.ps1` | 统计程序和 WebView2 子进程的内存（按 `--webview-exe-name=kojoomail.exe` 认进程；必须纯 ASCII，PowerShell 5 按 ANSI 读） |

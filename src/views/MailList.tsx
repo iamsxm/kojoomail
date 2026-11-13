@@ -183,7 +183,7 @@ export default function MailList() {
         {s.search && s.aiConfigured && <AskCard />}
         {isDrafts ? (
           drafts && drafts.length === 0 ? <Empty icon="draft" title={L('没有草稿', 'No drafts')} sub={L('写到一半关掉的邮件会自动存在这里', 'Emails you close before sending are saved here automatically')} /> : (drafts || []).map((d) => (
-            <div key={d.id} className="mrow" onClick={() => s.openCompose('draft', null, { draftId: d.id, draft: { ...d, accountId: d.accountId ?? s.accounts[0]?.id, html: '' } })}>
+            <div key={d.id} className="mrow" onClick={() => s.openCompose('draft', null, { draftId: d.id, draft: { ...d, accountId: d.accountId ?? s.accounts[0]?.id } })}>
               <Avatar name={d.to[0]?.name || ''} email={d.to[0]?.email || '?'} />
               <div style={{ minWidth: 0 }}>
                 <div className="row" style={{ alignItems: 'baseline', gap: 6 }}><span className="who truncate">{d.to.length ? L(`致 ${d.to.map((a) => a.name || a.email).join('、')}`, `To ${d.to.map((a) => a.name || a.email).join(', ')}`) : L('（还没填收件人）', '(No recipients yet)')}</span><span className="time">{shortTime(d.updated)}</span></div>

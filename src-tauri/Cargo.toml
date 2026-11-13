@@ -43,6 +43,11 @@ keyring = { version = "3", features = ["windows-native", "apple-native"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 anyhow = "1"
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
+# 普通发送、MCP 与预览共用的 Markdown 渲染和 HTML 清洗
+ammonia = "4.2"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+html2text = "0.16.7"
+linkify = "0.10"
 dirs = "5"
 # 读系统语言：界面「跟随系统」时用
 sys-locale = "0.3"

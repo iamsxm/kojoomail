@@ -6,7 +6,7 @@ import { Icon } from '../icons'
 import { useApp, pendingSends } from '../store'
 import { api, errText, type Addr, type DraftIn } from '../lib/api'
 import { parseAddrs, validEmail, fullTime } from '../lib/format'
-import { mdToHtml, quoteText, withSignature } from '../lib/md'
+import type { MailContent, MailQuote } from '../lib/mail-content'
 import { MdView, Seg, Sheet, useMenu } from '../ui'
 import { keyText } from '../lib/platform'
 import { L, EN } from '../lib/i18n'
@@ -22,7 +22,7 @@ export default function Compose() {
   const initial = useMemo(() => {
     const accountId = c.prefill?.accountId ?? base?.accountId ?? s.settings?.defaultAccount ?? s.accounts[0]?.id
     const self = new Set(s.accounts.map((a) => a.email.toLowerCase()))
-    let to: Addr[] = [], cc: Addr[] = [], subject = '', quote = ''
+    let to: Addr[] = [], cc: Addr[] = [], subject = '', quote: MailQuote | null = null
     if (base && (c.mode === 'reply' || c.mode === 'replyAll')) {
       to = [base.replyTo ? { name: '', email: base.replyTo } : { name: base.fromName, email: base.fromAddr }]
       if (c.mode === 'replyAll') {
@@ -31,24 +31,21 @@ export default function Compose() {
       }
       subject = /^re:/i.test(base.subject) ? base.subject : `Re: ${base.subject}`
       const who = base.fromName ? `${base.fromName} <${base.fromAddr}>` : base.fromAddr
-      quote = quoteText(base.text, EN ? `On ${fullTime(base.date)}, ${who} wrote:` : `在 ${fullTime(base.date)}，${who} 写道：`)
+      quote = { header: EN ? `On ${fullTime(base.date)}, ${who} wrote:` : `在 ${fullTime(base.date)}，${who} 写道：`, text: base.text, html: base.html, reply: true }
     } else if (base && c.mode === 'forward') {
       subject = /^(fwd?|转发):/i.test(base.subject) ? base.subject : `Fwd: ${base.subject}`
-      quote = EN
-        ? `\n\n---------- Forwarded message ----------\nFrom: ${base.fromName} <${base.fromAddr}>\nDate: ${fullTime(base.date)}\nSubject: ${base.subject}\n\n${base.text}`
-        : `\n\n---------- 转发的邮件 ----------\n发件人：${base.fromName} <${base.fromAddr}>\n时间：${fullTime(base.date)}\n主题：${base.subject}\n\n${base.text}`
+      const who = base.fromName ? `${base.fromName} <${base.fromAddr}>` : base.fromAddr
+      quote = { header: EN
+        ? `---------- Forwarded message ----------\nFrom: ${who}\nDate: ${fullTime(base.date)}\nSubject: ${base.subject}`
+        : `---------- 转发的邮件 ----------\n发件人：${who}\n时间：${fullTime(base.date)}\n主题：${base.subject}`,
+        text: base.text, html: base.html, reply: false }
     }
     if (c.prefill?.to) to = parseAddrs(c.prefill.to)
     if (c.prefill?.subject != null) subject = c.prefill.subject
     const d = c.draft
     if (d) {
-      // 草稿里存的正文已经带着引用，原样恢复；签名现在单独显示，草稿末尾带的那份去掉（新旧两种拼法都认）
-      const sig = me(d.accountId || accountId)?.signature || ''
-      let body = d.body
-      for (const tail of [`\n\n-- \n${sig}`, `\n\n${sig}`]) {
-        if (sig && body.endsWith(tail)) { body = body.slice(0, -tail.length); break }
-      }
-      return { accountId: d.accountId || accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body, quote: '', files: d.attachments || [], replyMsg: d.replyMsg ?? null, mode: d.mode || 'new' }
+      // 后端已兼容旧草稿；结构化正文不包含签名、引用，重开和撤销发送无需切割字符串。
+      return { accountId: d.accountId || accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.content.body, quote: d.content.quote ?? null, files: d.attachments || [], replyMsg: d.replyMsg ?? null, mode: d.mode || 'new' }
     }
     return { accountId, to, cc, bcc: [] as Addr[], subject, body: c.prefill?.body ?? '', quote, files: [] as string[], replyMsg: base?.id ?? null, mode: c.mode === 'draft' ? 'new' : c.mode }
   }, [c.key])
@@ -73,12 +70,11 @@ export default function Compose() {
   const menu = useMenu()
 
   const sig = me(accountId)?.signature || ''
-  // 签名不进编辑框：正文下面单独排好版显示，发送、预览和存草稿时拼在末尾（带正文/签名分隔）
-  const { text: withSig, md: withSigMd } = withSignature(body, sig)
+  const content: MailContent = useMemo(() => ({ body, signature: sig, quote: initial.quote }), [body, sig, initial.quote])
 
   const draft = (): DraftIn => ({
     id: draftId, accountId, to: rc.to, cc: rc.cc, bcc: rc.bcc, subject,
-    body: withSig + (initial.quote ? initial.quote : ''), html: '', replyMsg: initial.replyMsg, mode: initial.mode, attachments: files,
+    body, content, replyMsg: initial.replyMsg, mode: initial.mode, attachments: files,
   })
 
   // 自动存草稿：停止输入 2 秒后
@@ -142,7 +138,7 @@ export default function Compose() {
   }
 
   // 没填的占位：[日期] 这种。Markdown 的链接、图片 [文字](网址) 不算（签名里常有）；链接按钮插的 (https://) 还没填网址，照样提醒
-  const placeholders = (withSig.match(/\[[^\]\n]{1,30}\](?!\((?:https?:\/\/|mailto:|tel:)[^\s)])/gi) || []).filter((p) => !/^\[[xX ]\]$/.test(p))
+  const placeholders = (`${body}\n${sig}`.match(/\[[^\]\n]{1,30}\](?!\((?:https?:\/\/|mailto:|tel:)[^\s)])/gi) || []).filter((p) => !/^\[[xX ]\]$/.test(p))
   const facts = base?.ai?.facts || []
 
   const send = async () => {
@@ -159,15 +155,14 @@ export default function Compose() {
     if (!subject.trim() && !await ask(L('没有主题，确定发送吗？', 'No subject. Send anyway?'))) return
     const d = draft()
     try { await api.precheckSend(d) } catch (e) { s.toast(errText(e), { kind: 'err', ttl: 8000 }); return }
-    d.html = mdToHtml(withSigMd + (initial.quote ? initial.quote : ''))
     // 先存草稿：发送失败或撤销时内容不会丢
-    try { d.id = await api.saveDraft({ ...d, html: '' }) } catch { /* */ }
+    try { d.id = await api.saveDraft(d) } catch { /* */ }
     s.set({ compose: null })
     const secs = s.settings?.undoSendSecs ?? 5
     let cancelled = false
     let left = secs
     let lastToast = 0
-    const reopen = () => s.openCompose('draft', null, { draftId: d.id, draft: { ...d, html: '' } })
+    const reopen = () => s.openCompose('draft', null, { draftId: d.id, draft: d })
     const show = () => { if (lastToast) s.drop(lastToast); lastToast = s.toast(L(`正在发送… `, `Sending… `), { action: { label: L(`撤销 ${left}`, `Undo ${left}`), run: () => { cancelled = true; reopen() } }, ttl: 1100 }) }
     if (secs > 0) {
       // 倒计时期间不能重新加载界面（换语言），否则信就停在草稿里发不出去
@@ -265,14 +260,14 @@ export default function Compose() {
               )}
             </>
           ) : (
-            <MdView className="preview" md={withSigMd} />
+            <MdView className="preview" content={content} />
           )}
-          {initial.quote && (
+          {mode === 'edit' && initial.quote && (
             <div style={{ padding: '0 24px 8px' }}>
               <button className="btn sm sq" style={{ background: 'var(--well)', boxShadow: 'none', color: 'var(--sec)' }} onClick={() => setShowQuote(!showQuote)}>
-                {showQuote ? L('收起引用的原邮件', 'Hide original email') : L(`··· 显示${c.mode === 'forward' ? '转发' : '引用'}的原邮件`, `··· Show ${c.mode === 'forward' ? 'forwarded' : 'quoted'} email`)}
+                {showQuote ? L('收起引用的原邮件', 'Hide original email') : L(`··· 显示${initial.mode === 'forward' ? '转发' : '引用'}的原邮件`, `··· Show ${initial.mode === 'forward' ? 'forwarded' : 'quoted'} email`)}
               </button>
-              {showQuote && <pre style={{ margin: '8px 0 0', maxHeight: 160, overflow: 'auto', fontFamily: 'var(--sans)', fontSize: 12.5, color: 'var(--sec)', whiteSpace: 'pre-wrap', borderLeft: '2px solid var(--line)', paddingLeft: 10 }}>{initial.quote.trim()}</pre>}
+              {showQuote && <div style={{ marginTop: 8, maxHeight: 240, overflow: 'auto' }}><MdView className="sig-preview" content={{ body: '', signature: '', quote: initial.quote }} /></div>}
             </div>
           )}
           <div className="c-foot">

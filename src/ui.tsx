@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './icons'
 import { api, errText } from './lib/api'
 import { avatarColors, initials } from './lib/format'
-import { mdPreview } from './lib/md'
+import { useMailPreview } from './lib/use-mail-preview'
+import type { MailContent } from './lib/mail-content'
 import { useApp } from './store'
 import { L } from './lib/i18n'
 
@@ -94,10 +95,11 @@ export function Seg<T extends string>({ value, options, onChange, small }: { val
 }
 
 /** 排好版的 Markdown：写信的预览、签名的预览共用。点链接交给系统浏览器，不让应用窗口自己跳到那个网页 */
-export function MdView({ md, className }: { md: string; className: string }) {
-  const html = useMemo(() => mdPreview(md), [md])
+export function MdView({ md, content, className }: { className: string } & ({ md: string; content?: never } | { md?: never; content: MailContent })) {
+  const { html, error, pending } = useMailPreview(content ?? { body: md, signature: '' }, api.renderMail)
+  if (error) return <div className={className} role="alert">{L('预览失败：', 'Preview failed: ')}{errText(error)}</div>
   return (
-    <div className={className} dangerouslySetInnerHTML={{ __html: html || `<p style="color:var(--ter)">${L('（空）', '(empty)')}</p>` }} onClick={(e) => {
+    <div className={className} aria-busy={pending} dangerouslySetInnerHTML={{ __html: html || `<p style="color:var(--ter)">${pending ? L('正在生成预览…', 'Preparing preview…') : L('（空）', '(empty)')}</p>` }} onClick={(e) => {
       const a = (e.target as Element).closest('a')
       if (!a) return
       e.preventDefault()

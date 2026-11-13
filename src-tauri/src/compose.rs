@@ -1,13 +1,13 @@
 //! 写信预填：回复 / 全部回复 / 转发的收件人、主题前缀、引用正文和签名。
 //!
-//! 前端 Compose.tsx 有一份等价逻辑给界面用。两边各自独立：漂移只影响引用排版，
-//! threading 头（In-Reply-To / References）由 send_mail_inner 统一处理，不受这里影响。
+//! 只提供收件人、主题和结构化引用；排版统一交给 html::render。
 
 use std::collections::HashSet;
 
 use rusqlite::OptionalExtension;
 
 use crate::mime::Addr;
+use crate::html::{MailContent, MailQuote};
 use crate::{Ctx, i18n, store::Store};
 
 /// 预填好的一封草稿，字段和 commands::DraftIn 对得上
@@ -16,6 +16,7 @@ pub struct Prefill {
     pub cc: Vec<Addr>,
     pub subject: String,
     pub body: String,
+    pub content: MailContent,
     pub reply_msg: Option<i64>,
     pub mode: String,
 }
@@ -32,13 +33,14 @@ struct Base {
     subject: String,
     date: i64,
     text: String,
+    html: String,
 }
 
 fn base(st: &Store, id: i64) -> Result<Base, String> {
     let addrs = |s: String| serde_json::from_str::<Vec<Addr>>(&s).unwrap_or_default();
     st.conn
         .query_row(
-            "SELECT id, account_id, from_name, from_addr, to_json, cc_json, reply_to, subject, date, body_text FROM messages WHERE id=?",
+            "SELECT id, account_id, from_name, from_addr, to_json, cc_json, reply_to, subject, date, body_text, body_html FROM messages WHERE id=?",
             [id],
             |r| {
                 Ok(Base {
@@ -52,12 +54,34 @@ fn base(st: &Store, id: i64) -> Result<Base, String> {
                     subject: r.get(7)?,
                     date: r.get(8)?,
                     text: r.get(9)?,
+                    html: r.get(10)?,
                 })
             },
         )
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or_else(crate::mcp_scope::gone)
+}
+
+/// 调用方先检查草稿归属；编辑/发送已有草稿时保留其结构化引用。
+pub fn new_content(ctx: &Ctx, account: i64, draft_id: Option<i64>, body: Option<&str>) -> Result<MailContent, String> {
+    content_in(&ctx.store.lock().unwrap(), account, draft_id, body)
+}
+
+pub(crate) fn content_in(st: &Store, account: i64, draft_id: Option<i64>, body: Option<&str>) -> Result<MailContent, String> {
+    let signature: String = st.conn.query_row("SELECT signature FROM accounts WHERE id=?", [account], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if let Some(id) = draft_id {
+        let (saved_body, json): (String, Option<String>) = st.conn.query_row(
+            "SELECT body, content_json FROM drafts WHERE id=?", [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(|_| crate::mcp_scope::gone())?;
+        let mut content: MailContent = json.and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| crate::html::restore_legacy(&saved_body, &signature));
+        if let Some(body) = body.filter(|b| *b != saved_body) { content.body = body.into(); }
+        content.signature = signature;
+        return Ok(content);
+    }
+    Ok(MailContent { body: body.unwrap_or_default().into(), signature, quote: None })
 }
 
 /// `mode` 只认 reply / replyAll / forward。`text` 是 agent 写的新正文，排在引用上面。
@@ -67,7 +91,12 @@ pub fn prefill(ctx: &Ctx, base_id: i64, mode: &str, account_id: Option<i64>, tex
         return Err(format!("unknown mode: {mode}"));
     }
     let st = ctx.store.lock().unwrap();
-    let b = base(&st, base_id)?;
+    let mut b = base(&st, base_id)?;
+    if b.html.contains("cid:") {
+        if let Ok(raw) = std::fs::read(st.eml_path(base_id)) {
+            b.html = crate::mime::embed_inline_images(&b.html, &raw);
+        }
+    }
     let account = account_id.unwrap_or(b.account_id);
     let mut q = st.conn.prepare("SELECT email, signature FROM accounts").map_err(|e| e.to_string())?;
     let rows: Vec<(String, String)> = q
@@ -97,9 +126,9 @@ fn build(b: &Base, mode: &str, self_addrs: &[String], sig: &str, text: &str) -> 
     if mode == "forward" {
         subject = forward_subject(&b.subject);
         quote = if en {
-            format!("\n\n---------- Forwarded message ----------\nFrom: {who}\nDate: {}\nSubject: {}\n\n{}", full_time(b.date), b.subject, b.text)
+            format!("---------- Forwarded message ----------\nFrom: {who}\nDate: {}\nSubject: {}", full_time(b.date), b.subject)
         } else {
-            format!("\n\n---------- 转发的邮件 ----------\n发件人：{who}\n时间：{}\n主题：{}\n\n{}", full_time(b.date), b.subject, b.text)
+            format!("---------- 转发的邮件 ----------\n发件人：{who}\n时间：{}\n主题：{}", full_time(b.date), b.subject)
         };
     } else {
         // Reply-To 优先：邮件列表和「请勿回复」的信都靠它把回复引到别处
@@ -127,14 +156,18 @@ fn build(b: &Base, mode: &str, self_addrs: &[String], sig: &str, text: &str) -> 
                 .collect();
         }
         subject = reply_subject(&b.subject);
-        let header = if en { format!("On {}, {who} wrote:", full_time(b.date)) } else { format!("在 {}，{who} 写道：", full_time(b.date)) };
-        quote = quote_text(&b.text, &header);
+        quote = if en { format!("On {}, {who} wrote:", full_time(b.date)) } else { format!("在 {}，{who} 写道：", full_time(b.date)) };
     }
+    let content = MailContent {
+        body: text.into(), signature: sig.into(),
+        quote: Some(MailQuote { header: quote, text: b.text.clone(), html: b.html.clone(), reply: mode != "forward" }),
+    };
     Prefill {
         to,
         cc,
         subject,
-        body: format!("{}{quote}", with_signature(text, sig)),
+        body: crate::html::render(&content).text,
+        content,
         reply_msg: Some(b.id),
         mode: mode.into(),
     }
@@ -148,23 +181,6 @@ fn reply_subject(s: &str) -> String {
 fn forward_subject(s: &str) -> String {
     let l = s.to_ascii_lowercase();
     if l.starts_with("fwd:") || l.starts_with("fw:") || l.starts_with("转发:") { s.to_string() } else { format!("Fwd: {s}") }
-}
-
-/// 逐行 `> `，最多 200 行：长回复链能省掉绝大部分 token
-fn quote_text(text: &str, header: &str) -> String {
-    let lines: Vec<String> = text.split('\n').take(200).map(|l| format!("> {}", l.trim_end_matches('\r'))).collect();
-    format!("\n\n{header}\n{}", lines.join("\n"))
-}
-
-/// 和前端 md.ts withSignature 一致：纯文本用 RFC 3676 的 "-- " 分隔行
-fn with_signature(body: &str, sig: &str) -> String {
-    if sig.is_empty() {
-        return body.to_string();
-    }
-    if body.trim().is_empty() {
-        return sig.to_string();
-    }
-    format!("{body}\n\n-- \n{sig}")
 }
 
 /// 和前端 format.ts fullTime 一致：本地时间 YYYY-MM-DD HH:MM
@@ -193,6 +209,7 @@ mod tests {
             subject: "询价：FOB 上海".into(),
             date: 1_700_000_000,
             text: "请报价。\n交期多久？".into(),
+            html: String::new(),
         }
     }
 
@@ -266,30 +283,23 @@ mod tests {
     }
 
     #[test]
-    fn quote_prefixes_every_line_and_caps_at_200() {
+    fn quote_keeps_all_lines_without_truncating_original() {
         let long = (0..500).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let q = quote_text(&long, "H");
-        assert!(q.starts_with("\n\nH\n"));
-        let lines: Vec<&str> = q.trim_start_matches("\n\nH\n").split('\n').collect();
-        assert_eq!(lines.len(), 200);
-        assert!(lines.iter().all(|l| l.starts_with("> ")));
-        assert_eq!(lines[199], "> line 199");
-        assert!(!q.contains("line 200"));
+        let mut b = base();
+        b.text = long.clone();
+        let p = build(&b, "reply", &me(), "", "");
+        assert_eq!(p.content.quote.as_ref().unwrap().text, long);
+        assert!(p.body.contains("> line 499"));
     }
 
     #[test]
-    fn quote_handles_crlf() {
-        let q = quote_text("a\r\nb\r\n", "H");
-        assert!(q.contains("> a\n> b\n> "));
-        assert!(!q.contains('\r'));
-    }
-
-    #[test]
-    fn signature_uses_rfc3676_separator() {
-        assert_eq!(with_signature("正文", "张三"), "正文\n\n-- \n张三");
-        assert_eq!(with_signature("正文", ""), "正文");
-        assert_eq!(with_signature("", "张三"), "张三");
-        assert_eq!(with_signature("   ", "张三"), "张三");
+    fn quote_prefers_original_html_to_polluted_plain_text() {
+        let mut b = base();
+        b.text = "&nbsp;错误的替代文本".into();
+        b.html = "<p>原文&nbsp;<b>格式</b></p>".into();
+        let p = build(&b, "forward", &me(), "", "");
+        assert!(!p.body.contains("&nbsp;"));
+        assert!(crate::html::render(&p.content).html.contains("<b>格式</b>"));
     }
 
     /// 正文 → 签名 → 引用，顺序和前端 Compose.tsx 一致
@@ -305,7 +315,7 @@ mod tests {
     #[test]
     fn empty_text_still_quotes_the_original() {
         let p = build(&base(), "reply", &me(), "", "");
-        assert!(p.body.starts_with("\n\n"));
+        assert!(!p.body.is_empty());
         assert!(p.body.contains("> 请报价。"));
     }
 }

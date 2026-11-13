@@ -521,9 +521,8 @@ impl Mail {
         annotations(read_only_hint = false, destructive_hint = false, open_world_hint = false)
     )]
     async fn mail_draft_save(&self, Parameters(p): Parameters<ComposeArgs>) -> Out {
-        let account = self.sending_account(p.account_id)?;
-        check_refs(self.ctx(), p.id, p.reply_msg)?;
-        let ob = outbound(account, &p)?;
+        let ob = self.outbound_new(&p)?;
+        let account = ob.account;
         let id = commands::save_draft_inner(self.ctx(), ob.draft).map_err(fail)?;
         mcp_approval::audit("mail_draft_save", &mcp_scope::account_email(self.ctx(), account), &format!("to={} subject={}", ob.to.len(), mcp_approval::clean(&ob.subject, 80)), true);
         ok(json!({ "draftId": id, "accountId": account, "sent": false }))
@@ -531,7 +530,7 @@ impl Mail {
 
     #[tool(
         name = "mail_draft_list",
-        description = "List the drafts of the mailboxes this agent may send from, newest first. Each has id, accountId, to, cc, bcc, subject, body, replyMsg, mode, updated (unix seconds), attachments.",
+        description = "List the drafts of the mailboxes this agent may send from, newest first. Each has id, accountId, to, cc, bcc, subject, body, replyMsg, mode, updated (unix seconds), attachments. body is a plain-text preview; the draft id preserves original Markdown, signature and quote. When editing a draft, supply only the authored body; omit body to retain it unchanged.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn mail_draft_list(&self) -> Out {
@@ -539,7 +538,12 @@ impl Mail {
         let v: Vec<Value> = commands::list_drafts_inner(self.ctx())
             .map_err(fail)?
             .iter()
-            .map(|d| serde_json::to_value(d).unwrap_or(Value::Null))
+            .map(|d| {
+                let mut value = serde_json::to_value(d).unwrap_or(Value::Null);
+                // 内部的 HTML/Markdown 分段由草稿 id 恢复，无需向 agent 重复返回完整引用 HTML。
+                if let Some(object) = value.as_object_mut() { object.remove("content"); }
+                value
+            })
             .filter(|v| v["accountId"].as_i64().is_some_and(|a| scope.allows(a)))
             .collect();
         ok(json!({ "drafts": v }))
@@ -595,9 +599,7 @@ impl Mail {
         annotations(read_only_hint = false, destructive_hint = false, open_world_hint = true)
     )]
     async fn mail_send(&self, Parameters(p): Parameters<ComposeArgs>) -> Out {
-        let account = self.sending_account(p.account_id)?;
-        check_refs(self.ctx(), p.id, p.reply_msg)?;
-        let ob = outbound(account, &p)?;
+        let ob = self.outbound_new(&p)?;
         if ob.to.is_empty() {
             return Err(fail("no recipients".into()));
         }
@@ -621,6 +623,13 @@ struct Outbound {
 }
 
 impl Mail {
+    fn outbound_new(&self, p: &ComposeArgs) -> Result<Outbound, CallToolResult> {
+        let account = self.sending_account(p.account_id)?;
+        check_refs(self.ctx(), p.id, p.reply_msg)?;
+        let content = compose::new_content(self.ctx(), account, p.id, p.body.as_deref()).map_err(fail)?;
+        outbound(account, p, Some(content))
+    }
+
     /// 发信账号：显式指定 > 设置里的默认账号 > 第一个可发的账号。都必须过发信轴
     fn sending_account(&self, want: Option<i64>) -> Result<i64, CallToolResult> {
         let ctx = self.ctx();
@@ -658,7 +667,7 @@ impl Mail {
             attachments: attachments.to_vec(),
             id: None,
         };
-        let ob = outbound(account, &args)?;
+        let ob = outbound(account, &args, Some(p.content))?;
         if settings::load(ctx).mcp_send_mode == "confirm" {
             self.deliver(ob, if mode == "forward" { "mail_forward" } else { "mail_reply" }).await
         } else {
@@ -874,6 +883,7 @@ pub struct ComposeArgs {
     #[serde(default)]
     pub bcc: Vec<Rcpt>,
     pub subject: Option<String>,
+    /// Authored body in Markdown with safe HTML supported. The account signature is added automatically.
     pub body: Option<String>,
     pub reply_msg: Option<i64>,
     pub mode: Option<String>,
@@ -886,6 +896,7 @@ pub struct ComposeArgs {
 #[serde(rename_all = "camelCase")]
 pub struct ReplyArgs {
     pub id: i64,
+    /// Authored reply in Markdown with safe HTML supported. Do not add the signature or original quote.
     pub body: String,
     pub all: Option<bool>,
     pub account_id: Option<i64>,
@@ -898,6 +909,7 @@ pub struct ReplyArgs {
 pub struct ForwardArgs {
     pub id: i64,
     pub to: Vec<Rcpt>,
+    /// Authored introduction in Markdown with safe HTML supported. Do not add the signature or original quote.
     pub body: Option<String>,
     pub account_id: Option<i64>,
     #[serde(default)]
@@ -1015,12 +1027,13 @@ fn check_refs(ctx: &Ctx, draft_id: Option<i64>, reply_msg: Option<i64>) -> Resul
 }
 
 /// 只组装，不判权限：`id` / `replyMsg` 原样进 DraftIn，调用方必须先确认它们属于授权账号
-fn outbound(account: i64, p: &ComposeArgs) -> Result<Outbound, CallToolResult> {
+fn outbound(account: i64, p: &ComposeArgs, content: Option<crate::html::MailContent>) -> Result<Outbound, CallToolResult> {
     let to = rcpts(&p.to)?;
     let cc = rcpts(&p.cc)?;
     let bcc = rcpts(&p.bcc)?;
     let subject = header_safe(p.subject.as_deref().unwrap_or(""));
-    let body = p.body.clone().unwrap_or_default();
+    let content = content.unwrap_or_else(|| crate::html::MailContent { body: p.body.clone().unwrap_or_default(), ..Default::default() });
+    let body = crate::html::render(&content).text;
     let mode = p.mode.clone().unwrap_or_else(|| "new".into());
     if !matches!(mode.as_str(), "new" | "reply" | "replyAll" | "forward") {
         return Err(fail(format!("unknown mode: {mode}")));
@@ -1043,7 +1056,7 @@ fn outbound(account: i64, p: &ComposeArgs) -> Result<Outbound, CallToolResult> {
         "bcc": bcc,
         "subject": subject,
         "body": body,
-        "html": "",
+        "content": content,
         "replyMsg": p.reply_msg,
         "mode": mode,
         "attachments": p.attachments,
@@ -1233,7 +1246,7 @@ mod tests {
     #[test]
     fn unknown_compose_modes_are_refused() {
         let p: ComposeArgs = serde_json::from_value(json!({ "mode": "sendNow" })).unwrap();
-        assert!(outbound(1, &p).is_err());
+        assert!(outbound(1, &p, None).is_err());
     }
 
     /// DraftIn 是从 JSON 拼的，键名写错会被 serde 静默丢掉。
@@ -1257,7 +1270,7 @@ mod tests {
             "attachments": ["C:/tmp/quote.pdf"],
         }))
         .unwrap();
-        let ob = outbound(7, &p).unwrap();
+        let ob = outbound(7, &p, None).unwrap();
         assert_eq!(ob.subject, "报价单X-Evil: 1");
         let id = commands::save_draft_in(&st, ob.draft).unwrap();
         let row: (i64, String, String, String, String, String, Option<i64>, String, String) = st
@@ -1280,5 +1293,67 @@ mod tests {
         assert_eq!(serde_json::from_str::<Vec<String>>(&row.8).unwrap(), vec!["C:/tmp/quote.pdf"]);
         drop(st);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn frontend_mcp_preview_and_saved_drafts_have_identical_rendering() {
+        use crate::html::{MailContent, MailQuote};
+        let dir = std::env::temp_dir().join(format!("kjm-render-parity-{}", std::process::id()));
+        let st = crate::store::Store::open(&dir).unwrap();
+        st.conn.execute("INSERT INTO accounts (id,email,username,imap_host,imap_port,smtp_host,smtp_port,created,signature) VALUES (7,'me@example.com','me','h',993,'h',465,0,?)", ["**签名**\n<span style=\"color:#3F4AAB\">公司</span>"]).unwrap();
+        for mode in ["new", "reply", "replyAll", "forward"] {
+            let content = MailContent {
+                body: "**正文**\n\n- 项目一\n- 项目二\n\n<span style=\"color:#3F4AAB\">HTML 正文</span>".into(),
+                signature: "**签名**\n<span style=\"color:#3F4AAB\">公司</span>".into(),
+                quote: (mode != "new").then(|| MailQuote {
+                    header: "原邮件 <sender@example.com>".into(), text: "&nbsp;不应选到的纯文本".into(),
+                    html: "<p>原文&nbsp;<b>加粗</b> &gt; 正常实体</p>".into(), reply: mode != "forward",
+                }),
+            };
+            let frontend: commands::DraftIn = serde_json::from_value(json!({
+                "accountId": 7, "to": [{"email":"to@example.com", "name":"收件人"}], "cc":[], "bcc":[],
+                "subject":"排版", "body":"故意不同的旧字段", "html":"<script>不能绕过渲染</script>",
+                "content": content, "mode":mode, "attachments":[],
+            })).unwrap();
+            let args: ComposeArgs = serde_json::from_value(json!({"to":[{"email":"to@example.com", "name":"收件人"}], "subject":"排版", "body":content.body, "mode":mode})).unwrap();
+            let prepared = if mode == "new" { compose::content_in(&st, 7, None, Some(&content.body)).unwrap() } else { content.clone() };
+            let mcp = outbound(7, &args, Some(prepared)).unwrap();
+            let ui = commands::render_draft(&st, &frontend).unwrap();
+            assert_eq!(commands::render_mail(content.clone()).await.unwrap(), ui, "preview: {mode}");
+            assert_eq!(commands::render_draft(&st, &mcp.draft).unwrap(), ui, "MCP: {mode}");
+            assert!(!ui.html.contains("不能绕过渲染"));
+
+            let id = commands::save_draft_in(&st, mcp.draft).unwrap();
+            let listed = commands::list_drafts_in(&st).unwrap();
+            let listed = listed.iter().map(|draft| serde_json::to_value(draft).unwrap()).find(|draft| draft["id"].as_i64() == Some(id)).unwrap();
+            let reopened: commands::DraftIn = serde_json::from_value(listed).unwrap();
+            assert_eq!(commands::render_draft(&st, &reopened).unwrap(), ui, "UI 重开草稿: {mode}");
+            let saved_body: String = st.conn.query_row("SELECT body FROM drafts WHERE id=?", [id], |r| r.get(0)).unwrap();
+            let restored = compose::content_in(&st, 7, Some(id), Some(&saved_body)).unwrap();
+            assert_eq!(restored.body, content.body, "草稿重开后正文不能包含签名和引用");
+            assert_eq!(restored.quote, content.quote);
+            assert_eq!(crate::html::render(&restored), ui, "MCP 重开发送草稿: {mode}");
+            // 草稿重开选择当前账号的签名；验证完整签名时使用保存的快照。
+            let snapshot: String = st.conn.query_row("SELECT content_json FROM drafts WHERE id=?", [id], |r| r.get(0)).unwrap();
+            assert_eq!(crate::html::render(&serde_json::from_str(&snapshot).unwrap()), ui);
+            let changed = compose::content_in(&st, 7, Some(id), Some("修改的 **正文**")).unwrap();
+            assert_eq!(changed.body, "修改的 **正文**");
+            assert_eq!(changed.quote, content.quote, "MCP 编辑正文不能丢掉引用");
+
+            let outgoing = crate::smtp::Outgoing {
+                from: Addr { name: "发件人".into(), email: "me@example.com".into() },
+                to: vec![Addr { name: "收件人".into(), email: "to@example.com".into() }], cc: vec![], bcc: vec![],
+                subject: "排版".into(), text: ui.text.clone(), html: ui.html.clone(),
+                in_reply_to: String::new(), references: String::new(), attachments: vec![],
+            };
+            let raw = crate::smtp::build(&outgoing, "example.com", false).unwrap();
+            let parsed = crate::mime::parse_full(&raw);
+            // MIME 按 RFC 使用 CRLF；正文语义和渲染结果保持一致。
+            assert_eq!(parsed.html.replace("\r\n", "\n").trim(), ui.html.trim(), "HTML MIME: {mode}");
+            assert_eq!(parsed.text.replace("\r\n", "\n").trim(), ui.text.trim(), "text/plain MIME: {mode}");
+            assert!(!parsed.text.contains("<span") && !parsed.text.contains("&nbsp;"));
+        }
+        drop(st);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -581,9 +581,7 @@ pub(crate) fn read_full(st: &crate::store::Store, id: i64, inline_images: bool) 
     // 内嵌图片 cid: → data:
     if inline_images && full.html.contains("cid:") {
         if let Ok(raw) = std::fs::read(st.eml_path(id)) {
-            for (cid, data) in mime::inline_images(&raw) {
-                full.html = full.html.replace(&format!("cid:{cid}"), &data);
-            }
+            full.html = mime::embed_inline_images(&full.html, &raw);
         }
     }
     full.atts.retain(|a| !a.inline);
@@ -1237,10 +1235,28 @@ pub struct DraftIn {
     bcc: Vec<Addr>,
     subject: String,
     body: String,
-    html: String,
+    /// 兼容旧客户端的 html 字段由 serde 忽略；发信只能走后端统一渲染。
+    #[serde(default)]
+    content: Option<crate::html::MailContent>,
     reply_msg: Option<i64>,
     mode: String,
     attachments: Vec<String>,
+}
+
+/// UI 预览与最终 MIME 生成调用相同函数，不接受调用端提前生成的 HTML。
+#[tauri::command]
+pub async fn render_mail(content: crate::html::MailContent) -> Res<crate::html::RenderedMail> {
+    Ok(crate::html::render(&content))
+}
+
+pub(crate) fn draft_content(st: &crate::store::Store, d: &DraftIn) -> Res<crate::html::MailContent> {
+    if let Some(content) = &d.content { return Ok(content.clone()) }
+    let signature: String = st.conn.query_row("SELECT signature FROM accounts WHERE id=?", [d.account_id], |r| r.get(0)).map_err(e)?;
+    Ok(crate::html::restore_legacy(&d.body, &signature))
+}
+
+pub(crate) fn render_draft(st: &crate::store::Store, d: &DraftIn) -> Res<crate::html::RenderedMail> {
+    Ok(crate::html::render(&draft_content(st, d)?))
 }
 
 #[tauri::command]
@@ -1286,6 +1302,7 @@ pub(crate) fn precheck_send_inner(ctx: &Ctx, d: &DraftIn) -> Res<()> {
 }
 
 pub(crate) async fn send_mail_inner(ctx: Arc<Ctx>, d: DraftIn) -> Res<()> {
+    let rendered = render_draft(&ctx.store.lock().unwrap(), &d)?;
     let (email, name, user, host, port, tls, save_sent, provider, auth_kind): (String, String, String, String, u16, bool, bool, String, String) = ctx
         .store
         .lock()
@@ -1335,8 +1352,8 @@ pub(crate) async fn send_mail_inner(ctx: Arc<Ctx>, d: DraftIn) -> Res<()> {
         cc: d.cc.clone(),
         bcc: d.bcc.clone(),
         subject: d.subject.clone(),
-        text: d.body.clone(),
-        html: d.html.clone(),
+        text: rendered.text,
+        html: rendered.html,
         in_reply_to,
         references,
         attachments,
@@ -1437,6 +1454,7 @@ pub struct DraftOut {
     bcc: Vec<Addr>,
     subject: String,
     body: String,
+    content: crate::html::MailContent,
     reply_msg: Option<i64>,
     mode: String,
     updated: i64,
@@ -1454,22 +1472,25 @@ pub(crate) fn save_draft_inner(ctx: &Ctx, d: DraftIn) -> Res<i64> {
 }
 
 pub(crate) fn save_draft_in(st: &crate::store::Store, d: DraftIn) -> Res<i64> {
+    let content = draft_content(st, &d)?;
+    let body = crate::html::render(&content).text;
+    let content_json = serde_json::to_string(&content).map_err(e)?;
     let j = |v: &Vec<Addr>| serde_json::to_string(v).unwrap_or_else(|_| "[]".into());
     // 附件只存本机路径（不复制文件），重新打开草稿时还在原处就能直接发
     let att = serde_json::to_string(&d.attachments).unwrap_or_else(|_| "[]".into());
     if let Some(id) = d.id {
         st.conn
             .execute(
-                "UPDATE drafts SET account_id=?, to_json=?, cc_json=?, bcc_json=?, subject=?, body=?, reply_msg=?, mode=?, updated=?, att_json=? WHERE id=?",
-                params![d.account_id, j(&d.to), j(&d.cc), j(&d.bcc), d.subject, d.body, d.reply_msg, d.mode, now(), att, id],
+                "UPDATE drafts SET account_id=?, to_json=?, cc_json=?, bcc_json=?, subject=?, body=?, reply_msg=?, mode=?, updated=?, att_json=?, content_json=? WHERE id=?",
+                params![d.account_id, j(&d.to), j(&d.cc), j(&d.bcc), d.subject, body, d.reply_msg, d.mode, now(), att, content_json, id],
             )
             .map_err(e)?;
         Ok(id)
     } else {
         st.conn
             .execute(
-                "INSERT INTO drafts(account_id, to_json, cc_json, bcc_json, subject, body, reply_msg, mode, updated, att_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                params![d.account_id, j(&d.to), j(&d.cc), j(&d.bcc), d.subject, d.body, d.reply_msg, d.mode, now(), att],
+                "INSERT INTO drafts(account_id, to_json, cc_json, bcc_json, subject, body, reply_msg, mode, updated, att_json, content_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                params![d.account_id, j(&d.to), j(&d.cc), j(&d.bcc), d.subject, body, d.reply_msg, d.mode, now(), att, content_json],
             )
             .map_err(e)?;
         Ok(st.conn.last_insert_rowid())
@@ -1482,12 +1503,18 @@ pub async fn list_drafts(ctx: State<'_, Arc<Ctx>>) -> Res<Vec<DraftOut>> {
 }
 
 pub(crate) fn list_drafts_inner(ctx: &Ctx) -> Res<Vec<DraftOut>> {
-    let st = ctx.store.lock().unwrap();
-    let mut q = st.conn.prepare("SELECT id, account_id, to_json, cc_json, bcc_json, subject, body, reply_msg, mode, updated, att_json FROM drafts ORDER BY updated DESC").map_err(e)?;
+    list_drafts_in(&ctx.store.lock().unwrap())
+}
+
+pub(crate) fn list_drafts_in(st: &crate::store::Store) -> Res<Vec<DraftOut>> {
+    let mut q = st.conn.prepare("SELECT d.id, d.account_id, d.to_json, d.cc_json, d.bcc_json, d.subject, d.body, d.reply_msg, d.mode, d.updated, d.att_json, d.content_json, COALESCE(a.signature, '') FROM drafts d LEFT JOIN accounts a ON a.id=d.account_id ORDER BY d.updated DESC").map_err(e)?;
     let v = q
         .query_map([], |r| {
             let p = |s: String| serde_json::from_str::<Vec<Addr>>(&s).unwrap_or_default();
-            Ok(DraftOut { id: r.get(0)?, account_id: r.get(1)?, to: p(r.get(2)?), cc: p(r.get(3)?), bcc: p(r.get(4)?), subject: r.get(5)?, body: r.get(6)?, reply_msg: r.get(7)?, mode: r.get(8)?, updated: r.get(9)?, attachments: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default() })
+            let body: String = r.get(6)?;
+            let content = r.get::<_, Option<String>>(11)?.and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| crate::html::restore_legacy(&body, &r.get::<_, String>(12).unwrap_or_default()));
+            Ok(DraftOut { id: r.get(0)?, account_id: r.get(1)?, to: p(r.get(2)?), cc: p(r.get(3)?), bcc: p(r.get(4)?), subject: r.get(5)?, body, content, reply_msg: r.get(7)?, mode: r.get(8)?, updated: r.get(9)?, attachments: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default() })
         })
         .map_err(e)?
         .filter_map(|x| x.ok())

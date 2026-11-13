@@ -11,6 +11,7 @@ mod assist;
 mod commands;
 mod compose;
 mod graph;
+mod html;
 mod i18n;
 mod mailbox;
 mod mcp;
@@ -373,6 +374,7 @@ pub fn run() {
             commands::remove_account,
             commands::retry_account,
             commands::send_mail,
+            commands::render_mail,
             commands::precheck_send,
             commands::save_draft,
             commands::list_drafts,
