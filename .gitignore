@@ -2,9 +2,12 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+# 打包前由 cargo build -p kojoomail-mcp 拷进来
+src-tauri/binaries/
 tests/e2e/node_modules/
 *.log
 .local/
+release-assets/
 *.tsbuildinfo
 docs/images/screens/
 docs/images/screens-en/

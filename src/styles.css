@@ -143,6 +143,13 @@ a { color: var(--navy); }
 /* 贴着窗口底边、右边的按钮：提示往上、靠右弹，免得撑出滚动条（侧栏底部的设置按钮） */
 [data-tip][data-tip-pos="up"]:hover::after { top: auto; bottom: calc(100% + 6px); left: auto; right: 0; transform: none; }
 @keyframes tipin { from { opacity: 0; } to { opacity: 1; } }
+/* 文字被截断时的全文提示：挂在 body 上，长句子换行、左右夹在窗口内（见 ui.tsx 的 TipText） */
+.tip-box {
+  position: fixed; z-index: 100; max-width: min(360px, calc(100vw - 16px)); padding: 6px 9px; border-radius: 8px;
+  background: #0F1C2A; color: #fff; font-size: 12px; line-height: 1.45; white-space: normal; word-break: break-word;
+  pointer-events: none; box-shadow: 0 6px 16px -6px rgba(15, 28, 42, .5); animation: tipin .12s ease .4s both;
+}
+:root[data-theme="dark"] .tip-box { background: #ECE7DD; color: #14181E; }
 
 /* 分段控件 */
 .seg { display: flex; padding: 2px; border-radius: 8px; background: var(--well); box-shadow: inset 0 .5px 1px rgba(15, 28, 42, .08); }
@@ -265,6 +272,8 @@ a { color: var(--navy); }
 .mrow .udot { position: absolute; left: 2px; top: calc(var(--row-pad) + 14px); width: 7px; height: 7px; border-radius: 50%; background: var(--navy); }
 .mrow .tags { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
 .mrow .flag { color: var(--accent); }
+/* 按会话显示：名字后面的封数 */
+.mrow .tcount { flex: none; align-self: center; min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; background: var(--well); color: var(--icon); font: 600 10.5px var(--mono); display: inline-flex; align-items: center; justify-content: center; }
 
 /* ---------- 阅读区 ---------- */
 .reader { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -275,6 +284,17 @@ a { color: var(--navy); }
 :root[data-serif="1"] .reader h2 { --serif-title: var(--serif); }
 .sender { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .sender .avatar { width: 32px; height: 32px; font-size: 12.5px; }
+/* 按会话显示：这一串里当前这封之外的邮件（折叠的一行 / 展开的正文），当前这封上下各有一条细线 */
+.th-item { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 8px; padding: 7px 10px; border: 0; border-radius: 10px; background: var(--sunken); box-shadow: inset 0 0 0 .5px var(--line); color: var(--ink-3); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.th-item:hover { background: var(--hover); }
+.th-item.unread .th-who { font-weight: 600; color: var(--ink); }
+.th-item .avatar { width: 24px; height: 24px; font-size: 10.5px; flex: none; }
+.th-item .th-who { flex: none; max-width: 40%; color: var(--ink-2); }
+.th-item .th-prev { flex: 1; min-width: 0; color: var(--sec); }
+.th-item .th-time { flex: none; margin-left: auto; font-size: 12px; color: var(--ter); }
+.th-open { margin-top: 8px; padding-bottom: 12px; }
+.th-active { margin-top: 12px; padding: 2px 0 14px; border-top: .5px solid var(--line); border-bottom: .5px solid var(--line); }
+.th-active:last-child { border-bottom: 0; padding-bottom: 0; }
 .att-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .att { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px 0 6px; border: 0; border-radius: 8px; background: var(--sunken); box-shadow: inset 0 0 0 .5px var(--line); font-size: 12.5px; cursor: pointer; color: var(--ink); }
 .att:hover { background: var(--hover); }
@@ -315,6 +335,7 @@ a { color: var(--navy); }
 
 /* ---------- 弹层 ---------- */
 .scrim { position: fixed; inset: 0; z-index: 50; background: rgba(15, 28, 42, .22); display: flex; align-items: flex-start; justify-content: center; padding: 64px 20px; animation: fadein .15s ease; }
+.scrim-drag { position: absolute; top: 0; left: 0; right: 0; height: 46px; }
 .sheet { width: 100%; max-width: 560px; border-radius: 12px; background: var(--paper); box-shadow: 0 0 0 .5px rgba(15, 28, 42, .28), 0 2px 6px rgba(15, 28, 42, .08), 0 30px 70px -20px rgba(15, 28, 42, .45); overflow: hidden; animation: popin .2s cubic-bezier(.2, .8, .3, 1); max-height: calc(100vh - 120px); display: flex; flex-direction: column; }
 .sheet.wide { max-width: 760px; }
 .sheet.narrow { max-width: 440px; }
@@ -346,6 +367,36 @@ a { color: var(--navy); }
 .menu button:hover .ico, .menu button:hover .k { color: #fff; }
 .menu button.danger { color: var(--accent-text); }
 .menu .sep { height: .5px; background: var(--line); margin: 4px 10px; }
+
+/* 更新弹窗：说明区独立滚动，操作按钮始终可见，配色跟随应用主题。 */
+.update-dialog { width: min(560px, calc(100vw - 48px)); max-width: none; max-height: calc(100dvh - 48px); margin: auto; padding: 24px; border: .5px solid var(--line); border-radius: 12px; background: var(--card); color: var(--ink); box-shadow: var(--shadow-pop); overflow: hidden; }
+.update-dialog[open] { display: flex; flex-direction: column; }
+.update-dialog::backdrop { background: rgba(15, 28, 42, .38); backdrop-filter: blur(2px); }
+.update-heading { display: flex; align-items: flex-start; gap: 12px; flex: none; }
+.update-heading h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 650; line-height: 1.5; overflow-wrap: anywhere; }
+.update-heading .tb { flex: none; width: 28px; height: 28px; margin: -3px -5px 0 0; }
+.update-description { flex: none; margin: 6px 0 0; color: var(--sec); font-size: 13px; line-height: 1.7; }
+.update-notes { min-height: 100px; max-height: min(280px, 42vh); min-width: 0; margin-top: 22px; padding: 12px 16px; overflow: auto; scrollbar-gutter: stable; border: .5px solid var(--line); border-radius: 8px; background: var(--sunken); color: var(--ink-2); font-size: 13px; line-height: 1.75; overflow-wrap: anywhere; user-select: text; }
+.update-notes :is(h1, h2, h3, h4, h5, h6) { margin: 16px 0 8px; color: var(--ink); font-size: 13px; font-weight: 650; line-height: 1.6; }
+.update-notes p { margin: 0 0 8px; white-space: pre-wrap; }
+.update-notes :is(ul, ol) { margin: 6px 0 12px; padding-left: 20px; }
+.update-notes li + li { margin-top: 6px; }
+.update-notes a { color: var(--navy-text); text-decoration: underline; }
+.update-notes pre { overflow: auto; padding: 8px; border-radius: 6px; background: var(--well); }
+.update-notes code { font-family: var(--mono); font-size: .92em; }
+.update-notes img { max-width: 100%; height: auto; }
+.update-notes table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
+.update-notes :is(th, td) { padding: 4px 8px; border: .5px solid var(--line); }
+.update-notes-content > :first-child { margin-top: 0; }
+.update-notes-content > :last-child, .update-notes .update-empty { margin-bottom: 0; }
+.update-empty { color: var(--sec); }
+.update-status, .update-error { flex: none; margin: 14px 0 0; font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
+.update-status { color: var(--sec); }
+.update-error { color: var(--accent-text); max-height: 90px; overflow: auto; user-select: text; }
+.update-actions { flex: none; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.update-actions .update-skip { background: transparent; box-shadow: 0 0 0 .5px var(--line); color: var(--sec); }
+.update-dialog :focus-visible { outline: 2px solid var(--navy-text); outline-offset: 3px; }
+@media (max-width: 420px), (max-height: 480px) { .update-dialog { padding: 18px; } .update-notes { min-height: 0; margin-top: 14px; } .update-actions { margin-top: 16px; } }
 
 /* 提示条 */
 .toasts { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 95; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
@@ -398,6 +449,12 @@ a { color: var(--navy); }
 .set-main .group .gr .field.inset { max-width: 46%; }
 .set-main h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -.022em; }
 .set-main .lead { margin: 4px 0 0; font-size: 13px; color: var(--sec); }
+/* 签名预览：按发出去的样子显示，白底、字体字号和发信时套的一样（签名里的颜色、图片多是按白底配的），深色主题下也不变，和读信的白底卡片一个道理。
+   最小高度和三行的输入框一样，切换时下面的内容不跳 */
+.sig-preview { min-height: 77px; max-height: 320px; overflow: auto; padding: 8px 12px; border-radius: 8px; background: #fff; color: #1F2A37; color-scheme: light; box-shadow: 0 0 0 .5px var(--line); font: 14px/1.6 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; letter-spacing: 0; user-select: text; }
+.sig-preview a { color: #1B4A80; }
+.sig-preview > :first-child { margin-top: 0; }
+.sig-preview > :last-child { margin-bottom: 0; }
 
 /* 写信 */
 .compose { width: min(1000px, calc(100vw - 80px)); max-width: none; height: calc(100vh - 100px); }
@@ -413,6 +470,9 @@ a { color: var(--navy); }
 .compose textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent; padding: 12px 24px 20px; font-size: var(--body-size); line-height: 1.6; color: var(--ink-2); font-family: var(--sans); }
 .compose .preview { flex: 1; overflow-y: auto; padding: 12px 24px 20px; font-size: var(--body-size); line-height: 1.6; color: var(--ink-2); user-select: text; }
 .compose .preview p { margin: 0 0 8px; }
+/* 写信里的签名默认收起，为正文留出空间；展开时使用统一的只读预览。 */
+.compose .c-sig { display: grid; gap: 8px; flex: none; margin: 0 24px; padding: 0 0 8px; }
+.compose .c-sig .sig-preview { min-height: 0; max-height: 200px; }
 .compose .c-foot { display: flex; align-items: center; gap: 8px; padding: 10px 24px; border-top: .5px solid var(--line-2); flex-wrap: wrap; }
 .ai-side { width: 280px; flex: none; padding: 18px 14px; background: var(--paper); border-left: .5px solid var(--line); display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
 .act { display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; font-size: 13px; color: var(--ink-2); text-align: left; cursor: pointer; }

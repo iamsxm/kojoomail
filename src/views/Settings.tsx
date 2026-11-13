@@ -3,17 +3,19 @@ import { ask } from '../lib/ask'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Icon } from '../icons'
 import { useApp } from '../store'
-import { api, errText, FOCUS_CATS, type Account } from '../lib/api'
+import { api, errText, FOCUS_CATS, type Account, type McpInfo } from '../lib/api'
+import { copyText, mcpJson, mcpToml } from '../lib/mcp'
 import { ACCOUNT_COLORS, ago } from '../lib/format'
-import { Seg, Switch } from '../ui'
+import { MdView, Seg, Switch } from '../ui'
 import { GuideContent } from './Guide'
+import { Rules } from './Rules'
 import { DATA_DIR, IS_MAC, TRAY, VAULT, keyText } from '../lib/platform'
 import { L, catLabel } from '../lib/i18n'
 
 // 侧栏分组，和主界面侧栏一样带小标题
 const GROUPS: [string, [string, string, string][]][] = [
-  [L('基本', 'Basics'), [['general', 'gear', L('通用', 'General')], ['accounts', 'mail', L('账号', 'Accounts')], ['ai', 'sparkle', L('AI 与模型', 'AI & models')]]],
-  [L('提醒与操作', 'Alerts & controls'), [['notify', 'bell', L('通知与隐私', 'Notifications & privacy')], ['keys', 'keyboard', L('快捷键', 'Shortcuts')]]],
+  [L('基本', 'Basics'), [['general', 'gear', L('通用', 'General')], ['accounts', 'mail', L('账号', 'Accounts')], ['ai', 'sparkle', L('AI 与模型', 'AI & models')], ['mcp', 'external', L('MCP 服务', 'MCP server')]]],
+  [L('提醒与操作', 'Alerts & controls'), [['notify', 'bell', L('通知与隐私', 'Notifications & privacy')], ['rules', 'sliders', L('邮件规则', 'Mail rules')], ['keys', 'keyboard', L('快捷键', 'Shortcuts')]]],
   [L('帮助', 'Help'), [['guide', 'doc', L('使用教程', 'Guide')], ['about', 'info', L('关于', 'About')]]],
 ]
 
@@ -42,7 +44,9 @@ export default function SettingsPage() {
           {tab === 'general' && <General />}
           {tab === 'accounts' && <Accounts />}
           {tab === 'ai' && <Ai />}
+          {tab === 'mcp' && <Mcp />}
           {tab === 'notify' && <NotifyPrivacy />}
+          {tab === 'rules' && <Rules />}
           {tab === 'keys' && <Keys />}
           {tab === 'guide' && <><Head title={L('使用教程', 'Guide')} lead={L('五分钟了解 Kojoo Mail 怎么用。', 'Learn Kojoo Mail in five minutes.')} /><GuideContent /></>}
           {tab === 'about' && <About />}
@@ -58,6 +62,12 @@ function General() {
   const s = useApp()
   const st = s.settings!
   const save = s.saveSettings
+  const [pm, setPm] = useState(st.proxyMode ?? 'system')
+  const [pa, setPa] = useState(st.proxyAddr ?? '')
+  const commit = () => {
+    const a = pa.trim()
+    if (a && (st.proxyMode !== 'custom' || a !== st.proxyAddr)) save({ proxyMode: 'custom', proxyAddr: a })
+  }
   return (
     <>
       <Head title={L('通用', 'General')} lead={L('语言、外观、字号和启动方式。', 'Language, appearance, text size and startup.')} />
@@ -104,6 +114,7 @@ function General() {
           </div>
           <div className="gr"><span className="lbl">{L('信息密度', 'Density')}</span><Seg small value={st.density} onChange={(v) => save({ density: v })} options={[['compact', L('紧凑', 'Compact')], ['standard', L('标准', 'Default')], ['cozy', L('宽松', 'Comfortable')]]} /></div>
           <div className="gr"><div><div className="lbl">{L('邮件标题用宋体', 'Serif email subjects')}</div><div className="sub">{L('读信时的标题更有阅读感', 'A more bookish look for subjects when reading')}</div></div><Switch label={L('邮件标题用宋体', 'Serif email subjects')} on={st.serifTitles} onChange={(v) => save({ serifTitles: v })} /></div>
+          <div className="gr"><div><div className="lbl">{L('按会话显示', 'Conversation view')}</div><div className="sub">{L('同一来回的邮件在列表里合成一行，点开按时间看整串；回复、删除等仍只针对单封', 'Replies in the same conversation share one row in the list; open it to read the whole exchange in order. Reply, delete and other actions still apply to one email at a time')}</div></div><Switch label={L('按会话显示', 'Conversation view')} on={!!st.conversationView} onChange={(v) => save({ conversationView: v })} /></div>
         </div>
       </section>
       <section>
@@ -116,6 +127,27 @@ function General() {
               <select className="field" style={{ width: 'auto', height: 28, fontSize: 12.5 }} value={st.defaultAccount ?? s.accounts[0]?.id} onChange={(e) => save({ defaultAccount: Number(e.target.value) })}>
                 {s.accounts.map((a) => <option key={a.id} value={a.id}>{a.label ? `${a.label} · ${a.email}` : a.email}</option>)}
               </select>
+            </div>
+          )}
+        </div>
+      </section>
+      <section>
+        <h2 className="gh">{L('网络', 'Network')}</h2>
+        <div className="group sq">
+          <div className="gr"><div><div className="lbl">{L('代理', 'Proxy')}</div><div className="sub">{L('收信和发信走哪条路；国内用 Gmail 需要代理。已连上的账号下次重新连接时生效', 'How mail connections are made; Gmail in mainland China needs a proxy. Accounts already connected pick this up the next time they reconnect')}</div></div>
+            <Seg small value={pm} options={[['system', L('跟随系统', 'System')], ['off', L('不用代理', 'None')], ['custom', L('自定义', 'Custom')]]} onChange={(v) => {
+              if (v === 'custom') {
+                setPm('custom')
+                if (pa.trim()) save({ proxyMode: 'custom', proxyAddr: pa.trim() })
+              } else {
+                setPm(v)
+                save({ proxyMode: v })
+              }
+            }} />
+          </div>
+          {pm === 'custom' && (
+            <div className="gr"><div><div className="lbl">{L('代理地址', 'Proxy address')}</div><div className="sub">{L('HTTP 代理的 主机:端口，比如 Clash 的 127.0.0.1:7890；不支持 SOCKS。代理连不上时会直接提示，不会自动改成直连', 'host:port of an HTTP proxy, e.g. 127.0.0.1:7890 for Clash; SOCKS is not supported. If the proxy is unreachable you get an error instead of a silent direct connection')}</div></div>
+              <input className="field" style={{ width: 190, height: 28, fontSize: 12.5 }} placeholder="127.0.0.1:7890" spellCheck={false} aria-label={L('代理地址', 'Proxy address')} value={pa} onChange={(e) => setPa(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
             </div>
           )}
         </div>
@@ -141,6 +173,7 @@ function AccountCard({ a }: { a: Account }) {
   const [label, setLabel] = useState(a.label)
   const [name, setName] = useState(a.displayName)
   const [sig, setSig] = useState(a.signature)
+  const [sigMode, setSigMode] = useState<'edit' | 'preview'>('edit')
   // 常用分类：本地先变（连点几个不会互相覆盖），保存后以后端为准
   const [focus, setFocus] = useState(a.focus)
   useEffect(() => setFocus(a.focus), [a.focus.join('|')])
@@ -161,8 +194,14 @@ function AccountCard({ a }: { a: Account }) {
           </div>
         </div>
         <div style={{ padding: '10px 14px 12px', borderTop: '.5px solid var(--line-2)' }}>
-          <div className="lbl" style={{ marginBottom: 6 }}>{L('签名', 'Signature')}</div>
-          <textarea className="field" rows={3} style={{ height: 'auto', padding: '8px 12px', resize: 'vertical', lineHeight: 1.5 }} value={sig} onChange={(e) => setSig(e.target.value)} onBlur={() => sig !== a.signature && save({ signature: sig })} placeholder={L('写新邮件时自动加在末尾', 'Added to the end of new emails')} />
+          <div className="row" style={{ marginBottom: 6, gap: 10 }}>
+            <span className="lbl" style={{ flex: 'none' }}>{L('签名', 'Signature')}</span>
+            <span className="row" style={{ gap: 5, fontSize: 12, color: 'var(--sec)' }}><Icon name="markdown" size={16} />{L('支持 Markdown,HTML', 'Supports Markdown,HTML')}</span>
+            <div style={{ marginLeft: 'auto', flex: 'none' }}><Seg small value={sigMode} onChange={setSigMode} options={[['edit', L('编辑', 'Edit')], ['preview', L('预览', 'Preview')]]} /></div>
+          </div>
+          {/* 预览时输入框只是藏起来：切回编辑，拖过的高度和撤销记录都还在 */}
+          <textarea className="field" rows={3} style={{ height: 'auto', padding: '8px 12px', resize: 'vertical', lineHeight: 1.5, display: sigMode === 'edit' ? undefined : 'none' }} value={sig} onChange={(e) => setSig(e.target.value)} onBlur={() => sig !== a.signature && save({ signature: sig })} placeholder={L('写新邮件时自动加在末尾', 'Added to the end of new emails')} aria-label={L('签名', 'Signature')} />
+          {sigMode === 'preview' && <MdView className="sig-preview" md={sig} />}
         </div>
         <div className="gr" style={{ alignItems: 'flex-start', paddingTop: 10, paddingBottom: 10 }}>
           <div style={{ flex: '1 1 auto', minWidth: 0 }}><div className="lbl">{L('常用分类', 'Category tabs')}</div><div className="sub">{L('邮件列表上方的筛选页签。分类由 AI 判断；没配 AI 时只能自动认出「通知」「订阅」', 'Filter tabs above the mail list. Categories come from AI; without AI only Notifications and Newsletters are detected')}</div></div>
@@ -223,6 +262,7 @@ function Ai() {
   const [test, setTest] = useState<string>('')
   const [base, setBase] = useState(st.aiBase)
   const [models, setModels] = useState({ aiModel: st.aiModel, aiModelFine: st.aiModelFine, aiModelBackup: st.aiModelBackup })
+  const [custom, setCustom] = useState(st.aiCustom ?? '')
   const [choices, setChoices] = useState<string[]>([])
   // 以存下来的选择为准；早期没存选择的按地址猜
   const preset = AI_PRESETS.find((p) => p.id === st.aiProvider) ?? AI_PRESETS.find((p) => p.base && p.base === st.aiBase) ?? (st.aiBase ? CUSTOM : undefined)
@@ -345,6 +385,16 @@ function Ai() {
         </div>
       </section>
       <section>
+        <h2 className="gh">{L('自定义要求', 'Custom instructions')}</h2>
+        <div className="group sq">
+          <div style={{ padding: '10px 14px 12px' }}>
+            <div className="sub" style={{ marginBottom: 8 }}>{L('写下你的偏好，比如回复的语气、称呼习惯、更关注哪类信息。AI 写批注、起草回复和跟进邮件时会参考；空着就和原来一样。对之后分析的邮件生效，已有批注点「重新生成」才会更新。', 'Describe your preferences, such as reply tone, how to address people, or what to pay attention to. AI uses them when writing notes, drafting replies and follow-ups; leave empty to keep the default behavior. Applies to mail analyzed from now on; click Regenerate to update existing notes.')}</div>
+            <textarea className="field" rows={4} maxLength={500} aria-label={L('自定义要求', 'Custom instructions')} style={{ height: 'auto', padding: '8px 12px', resize: 'vertical', lineHeight: 1.5, width: '100%' }} value={custom} onChange={(e) => setCustom(e.target.value)} onBlur={() => { if (custom.trim() !== (st.aiCustom ?? '')) s.saveSettings({ aiCustom: custom.trim() }) }} placeholder={L('例如：回复尽量简短，称呼对方用「您」；摘要里把金额和截止日期写在最前面', 'Example: keep replies short and polite; put amounts and deadlines first in the summary')} />
+            <div className="sub" style={{ marginTop: 6, textAlign: 'right' }}>{custom.length} / 500</div>
+          </div>
+        </div>
+      </section>
+      <section>
         <h2 className="gh">{L('隐私与安全', 'Privacy & security')}</h2>
         <div className="group sq">
           {s.accounts.map((a) => (
@@ -356,9 +406,184 @@ function Ai() {
           ))}
           <div className="gr" style={{ minHeight: 52 }}>
             <Icon name="lock" style={{ color: 'var(--sec)' }} />
-            <div className="grow"><div className="lbl">{L('AI 只能起草，不能自动发送', 'AI can only draft, never send')}</div><div className="sub">{L('防止来信里夹带指令让 AI 代你发信，这一项不能关闭', "Stops instructions hidden in incoming mail from making AI send email for you. This can't be turned off")}</div></div>
+            <div className="grow"><div className="lbl">{L('应用内 AI 只能起草，不能自动发送', 'In-app AI can only draft, never send')}</div><div className="sub">{L('防止来信里夹带指令让 AI 代你发信，这一项不能关闭。外部 agent 走的是「MCP 服务」那条独立通道，要单独开启，发信还得你每次点允许', "Stops instructions hidden in incoming mail from making AI send email for you. This can't be turned off. External agents use the separate MCP server channel, which you enable on its own and where every send needs your approval")}</div></div>
             <span className="tag">{L('始终开启', 'Always on')}</span>
           </div>
+        </div>
+      </section>
+    </>
+  )
+}
+
+function Mcp() {
+  const s = useApp()
+  const st = s.settings!
+  const [info, setInfo] = useState<McpInfo | null>(null)
+  const [showToken, setShowToken] = useState(false)
+  const [fmt, setFmt] = useState<'json' | 'toml'>('json')
+  const [copied, setCopied] = useState('')
+
+  useEffect(() => {
+    if (!st.mcpEnabled) { setInfo(null); return }
+    let alive = true
+    api.mcpConfig().then((v) => { if (alive) setInfo(v) }).catch(() => {})
+    return () => { alive = false }
+  }, [st.mcpEnabled, st.mcpPort])
+
+  const copy = async (what: string, text: string) => {
+    const ok = await copyText(text)
+    s.toast(ok ? L('已复制', 'Copied') : L('复制失败，请手动选中复制', "Couldn't copy — select the text and copy manually"), { kind: ok ? undefined : 'err' })
+    if (ok) { setCopied(what); setTimeout(() => setCopied(''), 1500) }
+  }
+  const snippet = info?.proxyPath ? (fmt === 'json' ? mcpJson(info.proxyPath) : mcpToml(info.proxyPath)) : ''
+
+  return (
+    <>
+      <Head title={L('MCP 服务', 'MCP server')} lead={L('让本机的 AI agent（Claude Code、Codex、Cursor 等）通过标准 MCP 协议读你的邮件。', 'Let AI agents on this computer (Claude Code, Codex, Cursor…) read your mail over the standard MCP protocol. Marking, drafting and sending each need to be turned on separately.')} />
+      <section>
+        <h2 className="gh">{L('服务', 'Server')}</h2>
+        <div className="group sq">
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div className="grow"><div className="lbl">{L('开启 MCP 服务', 'Enable the MCP server')}</div><div className="sub">{L('只监听本机 127.0.0.1，局域网访问不到。关着的时候不占端口、不跑任何后台任务', 'Listens on 127.0.0.1 only; not reachable from the network. When off it holds no port and runs no background task')}</div></div>
+            <Switch label={L('开启 MCP 服务', 'Enable the MCP server')} on={st.mcpEnabled} onChange={(v) => s.saveSettings({ mcpEnabled: v })} />
+          </div>
+          {st.mcpEnabled && (
+            <>
+              <div className="gr">
+                <span className="dot" style={{ background: info?.running ? 'var(--green)' : 'var(--ter)' }} />
+                <div className="grow"><div className="lbl">{info?.running ? L('已监听', 'Listening') : L('未监听', 'Not listening')}</div><div className="sub mono" style={{ wordBreak: 'break-all' }}>{info?.url || L('启动失败，看「关于 → 导出诊断」里的日志', "Startup failed — check the log via About → Export diagnostics")}</div></div>
+              </div>
+              <div className="gr" style={{ minHeight: 52 }}>
+                <div><label className="lbl" htmlFor="mcp-port">{L('端口', 'Port')}</label><div className="sub">{L('0＝每次随机。被占用时自动换一个，配置里的代理会自己找到新端口', '0 = random each time. If the port is taken it picks another; the proxy finds it automatically')}</div></div>
+                <input id="mcp-port" type="number" className="field inset num" style={{ width: 100, textAlign: 'right' }} min={0} max={65535} value={st.mcpPort} onChange={(e) => s.saveSettings({ mcpPort: Math.min(65535, Math.max(0, Number(e.target.value) || 0)) })} />
+              </div>
+              <div className="gr" style={{ minHeight: 52 }}>
+                <div><div className="lbl">{L('访问令牌', 'Access token')}</div><div className="sub">{L('每次请求都要带。换了之后已配置的 agent 全部失效', 'Required on every request. Regenerating it disconnects all configured agents')}</div></div>
+                <div className="row" style={{ gap: 6, ...COL }}>
+                  <input className="field inset mono" style={{ flex: 1, minWidth: 0 }} readOnly type={showToken ? 'text' : 'password'} value={info?.token || ''} aria-label={L('访问令牌', 'Access token')} />
+                  <button className="tb" aria-label={showToken ? L('隐藏', 'Hide') : L('显示', 'Show')} onClick={() => setShowToken(!showToken)}><Icon name="eye" size={15} /></button>
+                  <button className="btn sm sq" disabled={!info?.token} onClick={() => info?.token && copy('token', info.token)}>{copied === 'token' ? L('已复制', 'Copied') : L('复制', 'Copy')}</button>
+                  <button className="btn sm sq" onClick={async () => {
+                    if (!await ask(L('重新生成令牌？已经配置好的 agent 会全部断开，需要重新复制配置。', 'Regenerate the token? Every configured agent will disconnect and need the new config.'))) return
+                    try { setInfo(await api.mcpRegenerateToken()) } catch (e) { s.toast(errText(e), { kind: 'err' }) }
+                  }}>{L('重新生成', 'Regenerate')}</button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </section>
+      {st.mcpEnabled && (
+        <section>
+          <h2 className="gh">{L('接入 agent', 'Connect an agent')}</h2>
+          <div className="group sq">
+            <div style={{ padding: '12px 14px 14px' }}>
+              <div className="row" style={{ marginBottom: 10 }}>
+                <span className="lbl grow">{L('把下面这段填进 agent 的 MCP 配置', 'Paste this into your agent’s MCP config')}</span>
+                <Seg small value={fmt} onChange={setFmt} options={[['json', 'JSON'], ['toml', 'TOML']]} />
+              </div>
+              {info?.proxyPath ? (
+                <>
+                  <pre className="mono sq" style={{ margin: 0, padding: '10px 12px', background: 'var(--sunken, rgba(0,0,0,.04))', fontSize: 12, overflowX: 'auto', whiteSpace: 'pre' }}>{snippet}</pre>
+                  <div className="row" style={{ marginTop: 10, gap: 8 }}>
+                    <button className="btn sm sq" onClick={() => copy('cfg', snippet)}>{copied === 'cfg' ? L('已复制', 'Copied') : L('复制配置', 'Copy config')}</button>
+                    <span className="sub grow">{L('JSON 用于 Claude Code / Cursor / Qoder，TOML 用于 Codex。协议是通用 MCP，没有客户端专属适配', 'JSON for Claude Code / Cursor / Qoder, TOML for Codex. Plain MCP — no client-specific adapter')}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="sub">{L('找不到 kojoomail-mcp 代理程序。它和主程序装在同一个目录，重新安装一次即可', "Can't find the kojoomail-mcp proxy. It ships next to the main app — reinstall to restore it")}</div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+      <section>
+        <h2 className="gh">{L('权限', 'Permissions')}</h2>
+        <div className="group sq">
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div className="grow"><div className="lbl">{L('允许读取邮件', 'Allow reading mail')}</div><div className="sub">{L('列出账号和文件夹、搜索、读正文、查联系人和待办', 'List accounts and folders, search, read bodies, look up contacts and to-dos')}</div></div>
+            <Switch label={L('允许读取邮件', 'Allow reading mail')} on={st.mcpRead} onChange={(v) => s.saveSettings({ mcpRead: v })} />
+          </div>
+          {st.mcpRead && (
+            <>
+              {s.accounts.map((a) => (
+                <div className="gr" key={a.id}>
+                  <span className="dot" style={{ background: a.color }} />
+                  <div className="grow"><div className="lbl">{L(`${a.label || a.email} 允许读取`, `Allow reading ${a.label || a.email}`)}</div>{!a.mcpRead && <div className="sub">{L('已关闭：agent 看不到这个账号，也搜不到它的邮件', 'Off: the agent cannot see this account or find its mail')}</div>}</div>
+                  <Switch label={L(`${a.email} 允许读取`, `Allow reading ${a.email}`)} on={a.mcpRead} onChange={async (v) => { await api.updateAccount(a.id, { mcpRead: v }); s.refreshMeta() }} />
+                </div>
+              ))}
+              <div className="gr" style={{ minHeight: 52 }}>
+                <div className="grow"><div className="lbl">{L('允许调用会消耗 AI 额度的工具', 'Allow tools that spend AI quota')}</div><div className="sub">{L('开启后多一个「问邮箱」工具，每次调用都会走你配置的模型并计入每日上限。今日简报是本地算的，不花额度', 'Adds an "ask my mailbox" tool that calls your model and counts against the daily limit. The daily digest is computed locally and costs nothing')}</div></div>
+                <Switch label={L('允许调用会消耗 AI 额度的工具', 'Allow tools that spend AI quota')} on={st.mcpAllowAi} onChange={(v) => s.saveSettings({ mcpAllowAi: v })} />
+              </div>
+              <div className="gr" style={{ minHeight: 52 }}>
+                <div><label className="lbl" htmlFor="mcp-chars">{L('单次返回正文上限', 'Body characters per call')}</label><div className="sub">{L('超出部分让 agent 分段续读，免得一次撑爆它的上下文', 'The agent reads the rest in follow-up calls, so one email cannot blow up its context')}</div></div>
+                <input id="mcp-chars" type="number" className="field inset num" style={{ width: 100, textAlign: 'right' }} min={200} max={50000} step={1000} value={st.mcpBodyMaxChars} onChange={(e) => s.saveSettings({ mcpBodyMaxChars: Number(e.target.value) || 0 })} />
+              </div>
+              <div className="gr" style={{ minHeight: 52 }}>
+                <Icon name="lock" style={{ color: 'var(--sec)' }} />
+                <div className="grow"><div className="lbl">{L('存附件会写到「下载」文件夹', 'Saving an attachment writes to your Downloads folder')}</div><div className="sub">{L('这是读权限唯一会动到磁盘的工具：只新建文件，重名自动加序号，绝不覆盖，也不弹资源管理器', 'The only read tool that touches disk: it creates new files, adds a number on name clashes, never overwrites and never opens Explorer')}</div></div>
+              </div>
+            </>
+          )}
+        </div>
+      </section>
+      <section>
+        <h2 className="gh">{L('修改邮件', 'Changing mail')}</h2>
+        <div className="group sq">
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div className="grow"><div className="lbl">{L('允许修改邮件', 'Allow changing mail')}</div><div className="sub">{L('标已读 / 未读、加星标、移动到别的文件夹、稍后处理、增删待办。改动会同步回邮件服务器', 'Mark read / unread, star, move to another folder, snooze, add and remove to-dos. Changes sync back to the mail server')}</div></div>
+            <Switch label={L('允许修改邮件', 'Allow changing mail')} on={st.mcpWrite} onChange={(v) => s.saveSettings({ mcpWrite: v })} />
+          </div>
+          {st.mcpWrite && s.accounts.map((a) => (
+            <div className="gr" key={a.id}>
+              <span className="dot" style={{ background: a.color }} />
+              <div className="grow"><div className="lbl">{L(`${a.label || a.email} 允许修改`, `Allow changing ${a.label || a.email}`)}</div>{!a.mcpWrite && <div className="sub">{L('已关闭：agent 改不了这个账号的邮件', 'Off: the agent cannot change this account’s mail')}</div>}</div>
+              <Switch label={L(`${a.email} 允许修改`, `Allow changing ${a.email}`)} on={a.mcpWrite} onChange={async (v) => { await api.updateAccount(a.id, { mcpWrite: v }); s.refreshMeta() }} />
+            </div>
+          ))}
+          {st.mcpWrite && (
+            <div className="gr" style={{ minHeight: 52 }}>
+              <Icon name="lock" style={{ color: 'var(--sec)' }} />
+              <div className="grow"><div className="lbl">{L('永久删除每次都要你确认', 'Permanent deletion always asks you first')}</div></div>
+              <span className="tag">{L('始终开启', 'Always on')}</span>
+            </div>
+          )}
+        </div>
+      </section>
+      <section>
+        <h2 className="gh">{L('发信', 'Sending')}</h2>
+        <div className="group sq">
+          <div className="gr" style={{ minHeight: 52 }}>
+            <div className="grow"><div className="lbl">{L('允许 agent 写信', 'Let agents compose mail')}</div><div className="sub">{L('新建、回复、全部回复、转发。默认只存草稿，发送键还是只有你能点', 'New mail, reply, reply all, forward. By default it only saves drafts — you are still the only one who can press Send')}</div></div>
+            <Switch label={L('允许 agent 写信', 'Let agents compose mail')} on={st.mcpSend} onChange={(v) => s.saveSettings({ mcpSend: v })} />
+          </div>
+          {st.mcpSend && (
+            <>
+              <div className="gr"><span className="lbl">{L('发信方式', 'How mail gets sent')}</span>
+                <Seg small value={st.mcpSendMode} onChange={(v) => s.saveSettings({ mcpSendMode: v })} options={[['draft', L('只存草稿', 'Draft only')], ['confirm', L('每次确认后发送', 'Confirm each send')]]} />
+              </div>
+              {s.accounts.map((a) => (
+                <div className="gr" key={a.id}>
+                  <span className="dot" style={{ background: a.color }} />
+                  <div className="grow"><div className="lbl">{L(`${a.label || a.email} 允许发信`, `Allow sending from ${a.label || a.email}`)}</div>{!a.mcpSend && <div className="sub">{L('已关闭：agent 用不了这个账号写信', 'Off: the agent cannot compose from this account')}</div>}</div>
+                  <Switch label={L(`${a.email} 允许发信`, `Allow sending from ${a.email}`)} on={a.mcpSend} onChange={async (v) => { await api.updateAccount(a.id, { mcpSend: v }); s.refreshMeta() }} />
+                </div>
+              ))}
+              <div className="gr" style={{ minHeight: 52 }}>
+                <Icon name="lock" style={{ color: 'var(--sec)' }} />
+                {st.mcpSendMode === 'confirm' ? (
+                  <>
+                    <div className="grow"><div className="lbl">{L('每封信发出前都要你点允许', 'Every send needs your approval')}</div></div>
+                    <span className="tag">{L('始终开启', 'Always on')}</span>
+                  </>
+                ) : (
+                  <div className="grow"><div className="lbl">{L('agent 只能存草稿', 'Agents can only save drafts')}</div><div className="sub">{L('这一档下根本没有发送工具，agent 连它的名字都看不到。草稿存在本地，你打开确认后再自己发', 'In this mode there is no send tool at all — the agent cannot even see its name. Drafts stay on this computer until you open one and send it yourself')}</div></div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </section>
     </>
@@ -416,6 +641,7 @@ function Keys() {
 
 function About() {
   const s = useApp()
+  const [checking, setChecking] = useState(false)
   return (
     <>
       <Head title={L('关于', 'About')} lead={L('Kojoo Mail：所有邮箱，一个收件箱。', 'Kojoo Mail: all your mailboxes, one inbox.')} />
@@ -423,21 +649,14 @@ function About() {
         <div className="gr"><span className="lbl">{L('版本', 'Version')}</span>
           <div className="row" style={{ gap: 8 }}>
             <span className="mono" style={{ fontSize: 12.5 }}>{s.version}</span>
-            <button className="btn sm sq" onClick={async () => {
+            <button className="btn sm sq" disabled={checking || s.updateBusy} onClick={async () => {
+              setChecking(true)
               try {
                 const u = await api.checkUpdate()
                 if (!u) { s.toast(L('已经是最新版', "You're up to date")); return }
-                if (await ask(L(`有新版本 ${u.version}${u.notes ? `
-
-${u.notes}` : ''}
-
-现在下载安装？装好后会自动重启。`, `Version ${u.version} is available${u.notes ? `
-
-${u.notes}` : ''}
-
-Download and install now? The app restarts when it's done.`))) s.installUpdate(u.version)
-              } catch (e) { s.toast(errText(e), { kind: 'err' }) }
-            }}>{L('检查更新', 'Check for updates')}</button>
+                s.promptUpdate(u, true)
+              } catch (e) { s.toast(errText(e), { kind: 'err' }) } finally { setChecking(false) }
+            }}>{checking ? L('正在检查…', 'Checking…') : L('检查更新', 'Check for updates')}</button>
           </div>
         </div>
         <div className="gr"><div><div className="lbl">{L('数据存在哪', 'Where your data lives')}</div><div className="sub mono">{L(`${DATA_DIR}（邮件缓存和设置），密码在${VAULT}`, `${DATA_DIR} (mail cache and settings); passwords in ${VAULT}`)}</div></div></div>

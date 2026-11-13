@@ -9,18 +9,26 @@ mod ai;
 mod applog;
 mod assist;
 mod commands;
+mod compose;
 mod graph;
+mod html;
 mod i18n;
 mod mailbox;
+mod mcp;
+mod mcp_approval;
+mod mcp_scope;
+mod mcp_tools;
 mod mime;
 mod net;
 mod oauth;
 mod os;
+mod rules;
 mod secret;
 mod settings;
 mod smtp;
 mod store;
 mod text;
+mod thread;
 mod update;
 
 use std::collections::HashMap;
@@ -39,10 +47,27 @@ pub struct Ctx {
     pub newmail_tx: mpsc::UnboundedSender<Vec<i64>>,
     /// 等 AI 结果再提醒的新邮件：id → 加入时间
     pub pending_notify: Mutex<HashMap<i64, i64>>,
+    /// 等正文到了再提醒的验证码邮件（好把验证码放进通知）
+    pub code_wait: Mutex<std::collections::HashSet<i64>>,
     pub pending_moves: Mutex<HashMap<u64, Vec<i64>>>,
     pub next_token: Mutex<u64>,
     pub settings_cache: Mutex<Option<settings::Settings>>,
     pub http: reqwest::Client,
+}
+
+/// 马上提醒；主题像验证码邮件、正文还没取的先等正文（预取完由 mailbox 调 `ai::code_ready`），
+/// 最多等 15 秒（一次性的，不是轮询）：正文没取到也照常提醒，只是通知里没有验证码
+fn notify_now_or_code(ctx: &Arc<Ctx>, id: i64) {
+    if !ai::wait_code(ctx, id) {
+        ai::notify_msg(ctx, id, None);
+        return;
+    }
+    ctx.code_wait.lock().unwrap().insert(id);
+    let c = ctx.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        ai::code_ready(&c, id);
+    });
 }
 
 #[cfg(windows)]
@@ -114,7 +139,7 @@ pub fn show_main(app: &tauri::AppHandle) {
 }
 
 /// 数据目录：测试时用 KOJOOMAIL_DATA 指定独立目录，不碰正式数据
-fn data_dir() -> std::path::PathBuf {
+pub(crate) fn data_dir() -> std::path::PathBuf {
     std::env::var_os("KOJOOMAIL_DATA").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("KojooMail"))
 }
 
@@ -144,6 +169,13 @@ pub fn run() {
             st.conn.execute("UPDATE messages SET moving=0 WHERE moving=1", [])?;
             // 上次退出时服务器那边还没移动完的：挪回原处，同步时按服务器实际情况对账
             st.conn.execute("UPDATE messages SET folder_id=orig_folder, uid=orig_uid, orig_folder=NULL, orig_uid=NULL WHERE uid<0 AND orig_folder IS NOT NULL", [])?;
+            // 可见性、文件夹位置恢复后立即重算，避免旧版本留下的侧栏计数持续到下一次同步。
+            let accounts = {
+                let mut q = st.conn.prepare("SELECT id FROM accounts")?;
+                let ids = q.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
+                ids
+            };
+            for account in accounts { st.refresh_counts(account)?; }
             let (ai_tx, ai_rx) = mpsc::unbounded_channel();
             let (nm_tx, mut nm_rx) = mpsc::unbounded_channel::<Vec<i64>>();
             let http = reqwest::Client::builder().pool_idle_timeout(std::time::Duration::from_secs(30)).pool_max_idle_per_host(1).build()?;
@@ -155,6 +187,7 @@ pub fn run() {
                 ai_tx,
                 newmail_tx: nm_tx,
                 pending_notify: Mutex::new(HashMap::new()),
+                code_wait: Mutex::new(std::collections::HashSet::new()),
                 pending_moves: Mutex::new(HashMap::new()),
                 next_token: Mutex::new(0),
                 settings_cache: Mutex::new(None),
@@ -162,6 +195,8 @@ pub fn run() {
             });
             app.manage(ctx.clone());
             settings::keep_legacy_ai(&ctx);
+            // 先把设置读进来（代理模式要在收信线程开始连接前生效）
+            settings::load(&ctx);
             ai::spawn(ctx.clone(), ai_rx);
             update::spawn(app.handle().clone());
 
@@ -190,7 +225,7 @@ pub fn run() {
                         // 广告、通知、订阅：当场本地分类，只有「全部提醒」才弹
                         if ai::apply_local(&c2, id).is_some() {
                             if mode == "all" {
-                                ai::notify_msg(&c2, id, None);
+                                notify_now_or_code(&c2, id);
                             }
                             continue;
                         }
@@ -200,7 +235,7 @@ pub fn run() {
                         } else {
                             let bulk: bool = c2.store.lock().unwrap().conn.query_row("SELECT bulk FROM messages WHERE id=?", [id], |r| r.get(0)).unwrap_or(true);
                             if mode == "all" || !bulk {
-                                ai::notify_msg(&c2, id, None);
+                                notify_now_or_code(&c2, id);
                             }
                         }
                     }
@@ -320,6 +355,8 @@ pub fn run() {
                     }
                 });
             }
+            // MCP 默认关闭；关着的时候 refresh 什么都不做，连端口都不 bind
+            mcp::refresh(&ctx);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -350,6 +387,7 @@ pub fn run() {
             commands::get_folders,
             commands::list_messages,
             commands::get_message,
+            commands::thread_messages,
             commands::mark,
             commands::snooze,
             commands::move_to,
@@ -366,6 +404,7 @@ pub fn run() {
             commands::remove_account,
             commands::retry_account,
             commands::send_mail,
+            commands::render_mail,
             commands::precheck_send,
             commands::save_draft,
             commands::list_drafts,
@@ -381,7 +420,13 @@ pub fn run() {
             commands::ai_draft,
             commands::ai_rewrite,
             commands::ai_translate,
+            rules::rule_list,
+            rules::rule_save,
+            rules::rule_delete,
+            rules::rule_order,
             commands::save_settings,
+            commands::mcp_config,
+            commands::mcp_regenerate_token,
             commands::set_ai_key,
             commands::ai_test,
             commands::ai_models,
@@ -397,6 +442,10 @@ pub fn run() {
         .build(tauri::generate_context!());
     match r {
         Ok(app) => app.run(|_h, _ev| {
+            // 退出时释放端口、删掉发现文件，免得代理连到一个已经没了的进程
+            if matches!(_ev, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+                mcp::stop();
+            }
             // macOS：点 Dock 图标时，关窗口缩到后台的主窗口要重新显示
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _ev {

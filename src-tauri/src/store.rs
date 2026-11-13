@@ -137,7 +137,60 @@ fn v2_translations(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
          );",
     )
 }
-const MIGRATIONS: &[Step] = &[v2_translations];
+/// 数据版本 3：草稿分别保存 Markdown 正文、签名和原文引用；旧草稿的 body 保持可读。
+fn v3_draft_content(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch("ALTER TABLE drafts ADD COLUMN content_json TEXT;")
+}
+/// 数据版本 4：会话编号。messages.thread_id 是这封邮件所在的会话；thread_keys 记每个 Message-ID 属于哪一串
+/// （邮件删了也留着，之后的回复还能对上）；thread_seq 只用来发新编号。旧邮件按时间顺序补一遍
+fn v4_threads(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
+    // 官方 0.3.2 把会话放在 v3；切回 fork 时该列可能已经存在。
+    if !tx.prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='thread_id'")?.exists([])? {
+        tx.execute_batch("ALTER TABLE messages ADD COLUMN thread_id INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS thread_keys (\n\
+           account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,\n\
+           key TEXT NOT NULL,\n\
+           thread_id INTEGER NOT NULL,\n\
+           PRIMARY KEY (account_id, key)\n\
+         ) WITHOUT ROWID;\n\
+         CREATE INDEX IF NOT EXISTS idx_tkeys_thread ON thread_keys(account_id, thread_id);\n\
+         CREATE TABLE IF NOT EXISTS thread_seq (id INTEGER PRIMARY KEY AUTOINCREMENT);\n\
+         CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(account_id, thread_id);",
+    )?;
+    let rows: Vec<(i64, i64, String, String, String)> = {
+        let mut q = tx.prepare("SELECT id, account_id, msgid, in_reply_to, refs FROM messages WHERE thread_id=0 ORDER BY date, id")?;
+        let v = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
+        v
+    };
+    for (id, account_id, msgid, in_reply_to, refs) in rows {
+        crate::thread::assign(tx, account_id, id, &msgid, &in_reply_to, &refs)?;
+    }
+    Ok(())
+}
+/// 数据版本 5：邮件规则。account_id 为 NULL 表示所有账号；条件和动作存 JSON（rules.rs 解析、校验）
+fn v5_rules(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
+    // 官方 v3/v4 没有 fork 的 v3 草稿列；在同一迁移事务内补齐，迁移前备份仍保持原样。
+    if !tx.prepare("SELECT 1 FROM pragma_table_info('drafts') WHERE name='content_json'")?.exists([])? {
+        tx.execute_batch("ALTER TABLE drafts ADD COLUMN content_json TEXT;")?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS rules (\n\
+           id INTEGER PRIMARY KEY,\n\
+           name TEXT NOT NULL DEFAULT '',\n\
+           enabled INTEGER NOT NULL DEFAULT 1,\n\
+           sort INTEGER NOT NULL DEFAULT 0,\n\
+           account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,\n\
+           match_all INTEGER NOT NULL DEFAULT 1,\n\
+           conds_json TEXT NOT NULL DEFAULT '[]',\n\
+           actions_json TEXT NOT NULL DEFAULT '[]',\n\
+           stop INTEGER NOT NULL DEFAULT 0,\n\
+           created INTEGER NOT NULL\n\
+         );",
+    )
+}
+const MIGRATIONS: &[Step] = &[v2_translations, v3_draft_content, v4_threads, v5_rules];
 /// 当前代码对应的数据版本
 const LATEST: i64 = MIGRATIONS.len() as i64 + 1;
 
@@ -171,6 +224,10 @@ impl Store {
         add_column(&conn, "accounts", "ai_level", "TEXT NOT NULL DEFAULT 'full'")?;
         // 待跟进：用户点了「不用跟进」的已发送邮件；两个索引给「对方回了没有」查询用
         add_column(&conn, "messages", "followup_off", "INTEGER NOT NULL DEFAULT 0")?;
+        // MCP 每账号授权：读默认开（开 MCP 就是为了读），写和发必须逐个账号显式打开
+        add_column(&conn, "accounts", "mcp_read", "INTEGER NOT NULL DEFAULT 1")?;
+        add_column(&conn, "accounts", "mcp_write", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column(&conn, "accounts", "mcp_send", "INTEGER NOT NULL DEFAULT 0")?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_irt ON messages(in_reply_to) WHERE in_reply_to != ''", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_acc_from ON messages(account_id, lower(from_addr), date)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_placeholder ON messages(folder_id, msgid) WHERE uid < 0", [])?;
@@ -270,11 +327,26 @@ impl Store {
     pub fn refresh_counts(&self, account_id: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE folders SET
-               unread = (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id AND m.seen = 0),
-               total = (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id)
+               unread = (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id AND m.seen = 0 AND m.moving = 0),
+               total = (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id AND m.moving = 0)
              WHERE account_id = ?",
             [account_id],
         )?;
+        Ok(())
+    }
+
+    /// 移动失败后恢复原位置，同时恢复可见性；正文及关联的 AI、待办继续使用原邮件 id。
+    pub fn rollback_moves(&self, account_id: i64, ids: &[i64]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            tx.execute(
+                "UPDATE messages SET folder_id=orig_folder, uid=orig_uid, moving=0, orig_folder=NULL, orig_uid=NULL
+                 WHERE id=? AND account_id=? AND uid<0 AND orig_folder IS NOT NULL",
+                params![id, account_id],
+            )?;
+        }
+        self.refresh_counts(account_id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -353,6 +425,38 @@ mod migrate_tests {
     }
 
     #[test]
+    fn moving_counts_match_visible_rows_and_rollback_restores_original_message() {
+        let d = tmp("moving-counts");
+        let st = Store::open(&d).unwrap();
+        st.conn.execute("INSERT INTO accounts(id,email,username,imap_host,imap_port,smtp_host,smtp_port,created) VALUES(1,'a@example.com','a','h',993,'h',465,0)", []).unwrap();
+        st.conn.execute("INSERT INTO folders(id,account_id,path,name,role) VALUES(1,1,'INBOX','Inbox','inbox'),(5,1,'Junk E-mail','Junk','junk')", []).unwrap();
+        st.conn.execute("INSERT INTO messages(id,account_id,folder_id,uid,moving,seen,body_text,has_body) VALUES(10,1,5,-10,1,0,'缓存正文',1),(11,1,5,20,0,1,'',0)", []).unwrap();
+        st.conn.execute("UPDATE messages SET orig_folder=1,orig_uid=7 WHERE id=10", []).unwrap();
+        st.conn.execute("INSERT INTO ai(msg_id,summary) VALUES(10,'保留批注')", []).unwrap();
+        st.conn.execute("INSERT INTO todos(msg_id,text,created) VALUES(10,'保留待办',0)", []).unwrap();
+        let counts = |id| st.conn.query_row("SELECT unread,total FROM folders WHERE id=?", [id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).unwrap();
+        st.refresh_counts(1).unwrap();
+        assert_eq!(counts(5), (0, 1), "隐藏的 moving 行不能计入侧栏");
+        // 其他账号不能回滚本账号的移动。
+        st.rollback_moves(2, &[10]).unwrap();
+        assert_eq!(counts(1), (0, 0));
+        st.rollback_moves(1, &[10]).unwrap();
+        assert_eq!(counts(1), (1, 1));
+        assert_eq!(counts(5), (0, 1));
+        let row: (i64, i64, bool, String, Option<i64>, Option<i64>) = st.conn.query_row(
+            "SELECT folder_id,uid,moving,body_text,orig_folder,orig_uid FROM messages WHERE id=10", [],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+        ).unwrap();
+        assert_eq!(row, (1,7,false,"缓存正文".into(),None,None));
+        assert_eq!(st.conn.query_row("SELECT summary FROM ai WHERE msg_id=10", [], |r| r.get::<_, String>(0)).unwrap(), "保留批注");
+        assert_eq!(st.conn.query_row("SELECT text FROM todos WHERE msg_id=10", [], |r| r.get::<_, String>(0)).unwrap(), "保留待办");
+        st.rollback_moves(1, &[10]).unwrap();
+        assert_eq!(counts(1), (1, 1), "重复回滚应为空操作");
+        drop(st);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
     fn adds_missing_legacy_columns() {
         let d = tmp("legacy");
         std::fs::create_dir_all(&d).unwrap();
@@ -363,6 +467,132 @@ mod migrate_tests {
         }
         let st = Store::open(&d).unwrap();
         st.conn.query_row("SELECT auth, focus, ai_level FROM accounts LIMIT 1", [], |_| Ok(())).optional().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn structured_draft_migration_preserves_version_two_drafts() {
+        let d = tmp("draft-content");
+        std::fs::create_dir_all(&d).unwrap();
+        {
+            let c = Connection::open(d.join("kojoomail.db")).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            c.execute_batch("PRAGMA user_version = 2").unwrap();
+            c.execute("INSERT INTO drafts (body, mode, updated) VALUES (?, 'reply', 0)", ["正文\n\n-- \n签名\n\nOn 2026-11-13, A wrote:\n> 原文"]).unwrap();
+        }
+        let st = Store::open(&d).unwrap();
+        let (body, content): (String, Option<String>) = st.conn.query_row("SELECT body,content_json FROM drafts", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert!(body.contains("原文"));
+        assert!(content.is_none());
+        assert!(d.join("kojoomail.db.bak-v2").exists());
+        assert_eq!(crate::html::restore_legacy(&body, "签名").body, "正文");
+        drop(st);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn fork_v3_upgrade_keeps_structured_drafts_permissions_and_mail_relations() {
+        let d = tmp("fork-v3-threads");
+        std::fs::create_dir_all(&d).unwrap();
+        let content = r#"{"body":"new body","signature":"signature"}"#;
+        {
+            let mut c = Connection::open(d.join("kojoomail.db")).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            let tx = c.transaction().unwrap();
+            v2_translations(&tx).unwrap();
+            v3_draft_content(&tx).unwrap();
+            tx.execute_batch("ALTER TABLE accounts ADD COLUMN mcp_read INTEGER NOT NULL DEFAULT 1;
+                ALTER TABLE accounts ADD COLUMN mcp_write INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE accounts ADD COLUMN mcp_send INTEGER NOT NULL DEFAULT 0;
+                INSERT INTO accounts(id,email,username,imap_host,imap_port,smtp_host,smtp_port,created,mcp_read,mcp_write,mcp_send)
+                    VALUES(1,'a@example.com','a','h',993,'h',465,0,0,1,1);
+                INSERT INTO folders(id,account_id,path,name,role) VALUES(1,1,'INBOX','Inbox','inbox');
+                INSERT INTO messages(id,account_id,folder_id,uid,msgid,date) VALUES(10,1,1,10,'a@example.com',1);
+                INSERT INTO messages(id,account_id,folder_id,uid,msgid,in_reply_to,date) VALUES(11,1,1,11,'b@example.com','a@example.com',2);
+                INSERT INTO ai(msg_id,summary) VALUES(10,'keep notes');
+                INSERT INTO todos(msg_id,text,created) VALUES(10,'keep todo',0);
+                PRAGMA user_version=3;").unwrap();
+            tx.execute("INSERT INTO drafts(body,content_json,updated) VALUES('legacy body',?,0)", [content]).unwrap();
+            tx.commit().unwrap();
+        }
+        let st = Store::open(&d).unwrap();
+        assert_eq!(LATEST, 5);
+        let threads: (i64, i64) = st.conn.query_row("SELECT a.thread_id,b.thread_id FROM messages a JOIN messages b ON b.id=11 WHERE a.id=10", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert!(threads.0 > 0);
+        assert_eq!(threads.0, threads.1);
+        assert_eq!(st.conn.query_row("SELECT content_json FROM drafts", [], |r| r.get::<_, String>(0)).unwrap(), content);
+        assert_eq!(st.conn.query_row("SELECT mcp_read,mcp_write,mcp_send FROM accounts", [], |r| Ok((r.get::<_,bool>(0)?,r.get::<_,bool>(1)?,r.get::<_,bool>(2)?))).unwrap(), (false,true,true));
+        assert_eq!(st.conn.query_row("SELECT summary FROM ai WHERE msg_id=10", [], |r| r.get::<_,String>(0)).unwrap(), "keep notes");
+        assert_eq!(st.conn.query_row("SELECT text FROM todos WHERE msg_id=10", [], |r| r.get::<_,String>(0)).unwrap(), "keep todo");
+        assert_eq!(st.conn.query_row("SELECT COUNT(*) FROM rules", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+        assert!(d.join("kojoomail.db.bak-v3").exists());
+        drop(st);
+        let st = Store::open(&d).unwrap();
+        assert_eq!(st.conn.query_row("SELECT thread_id FROM messages WHERE id=10", [], |r| r.get::<_,i64>(0)).unwrap(), threads.0);
+        drop(st);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn upstream_v3_and_v4_upgrade_fill_fork_drafts_without_rethreading() {
+        for version in [3,4] {
+            let d = tmp(&format!("upstream-v{version}"));
+            std::fs::create_dir_all(&d).unwrap();
+            {
+                let mut c = Connection::open(d.join("kojoomail.db")).unwrap();
+                c.execute_batch(SCHEMA).unwrap();
+                let tx = c.transaction().unwrap();
+                v2_translations(&tx).unwrap();
+                v4_threads(&tx).unwrap();
+                tx.execute_batch("INSERT INTO accounts(id,email,username,imap_host,imap_port,smtp_host,smtp_port,created) VALUES(1,'a@example.com','a','h',993,'h',465,0);
+                    INSERT INTO folders(id,account_id,path,name,role) VALUES(1,1,'INBOX','Inbox','inbox');
+                    INSERT INTO messages(id,account_id,folder_id,uid,msgid,thread_id) VALUES(10,1,1,10,'a@example.com',42);
+                    INSERT INTO thread_keys(account_id,key,thread_id) VALUES(1,'a@example.com',42);
+                    INSERT INTO thread_seq(id) VALUES(42);
+                    INSERT INTO drafts(body,updated) VALUES('upstream draft',0);").unwrap();
+                if version == 4 {
+                    v5_rules(&tx).unwrap();
+                    // 官方 v4 有规则表，但没有 fork 的草稿列。
+                    tx.execute_batch("ALTER TABLE drafts DROP COLUMN content_json;
+                        INSERT INTO rules(name,created) VALUES('keep upstream rule',0);").unwrap();
+                }
+                tx.pragma_update(None,"user_version",version).unwrap();
+                tx.commit().unwrap();
+            }
+            let st = Store::open(&d).unwrap();
+            assert_eq!(st.conn.query_row("PRAGMA user_version", [], |r| r.get::<_,i64>(0)).unwrap(), 5);
+            assert_eq!(st.conn.query_row("SELECT thread_id FROM messages WHERE id=10", [], |r| r.get::<_,i64>(0)).unwrap(), 42);
+            assert_eq!(st.conn.query_row("SELECT body,content_json FROM drafts", [], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).unwrap(), ("upstream draft".into(),None));
+            if version == 4 {
+                assert_eq!(st.conn.query_row("SELECT name FROM rules", [], |r| r.get::<_,String>(0)).unwrap(), "keep upstream rule");
+            }
+            assert!(d.join(format!("kojoomail.db.bak-v{version}")).exists());
+            drop(st);
+            Store::open(&d).unwrap();
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// 老账号升级后：读默认开，写和发默认关，必须逐账号显式授权
+    #[test]
+    fn existing_accounts_get_read_only_mcp_defaults() {
+        let d = tmp("mcpcols");
+        std::fs::create_dir_all(&d).unwrap();
+        {
+            let c = Connection::open(d.join("kojoomail.db")).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            c.execute(
+                "INSERT INTO accounts (id, email, username, imap_host, imap_port, smtp_host, smtp_port, created) VALUES (1, 'old@example.com', 'old@example.com', 'h', 993, 'h', 465, 0)",
+                [],
+            ).unwrap();
+        }
+        let st = Store::open(&d).unwrap();
+        let (r, w, s): (i64, i64, i64) = st
+            .conn
+            .query_row("SELECT mcp_read, mcp_write, mcp_send FROM accounts WHERE id = 1", [], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?)))
+            .unwrap();
+        assert_eq!((r, w, s), (1, 0, 0));
+        drop(st);
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -132,6 +132,12 @@ pub fn attachment_bytes(raw: &[u8], idx: usize) -> Option<(String, Vec<u8>)> {
 }
 
 /// 正文里 cid: 引用的内嵌图片 → data: URL（单张 ≤ 3MB，总共 ≤ 10MB）
+pub fn embed_inline_images(html: &str, raw: &[u8]) -> String {
+    let mut html = html.to_string();
+    for (cid, data) in inline_images(raw) { html = html.replace(&format!("cid:{cid}"), &data); }
+    html
+}
+
 pub fn inline_images(raw: &[u8]) -> Vec<(String, String)> {
     let Some(m) = MessageParser::default().parse(raw) else { return vec![] };
     let mut out = vec![];

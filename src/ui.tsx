@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './icons'
+import { api, errText } from './lib/api'
 import { avatarColors, initials } from './lib/format'
+import { useMailPreview } from './lib/use-mail-preview'
+import type { MailContent } from './lib/mail-content'
 import { useApp } from './store'
 import { L } from './lib/i18n'
 
@@ -91,14 +94,30 @@ export function Seg<T extends string>({ value, options, onChange, small }: { val
   )
 }
 
-export function Sheet({ children, onClose, className = '', label }: { children: ReactNode; onClose: () => void; className?: string; label: string }) {
+/** 排好版的 Markdown：写信的预览、签名的预览共用。点链接交给系统浏览器，不让应用窗口自己跳到那个网页 */
+export function MdView({ md, content, className }: { className: string } & ({ md: string; content?: never } | { md?: never; content: MailContent })) {
+  const { html, error, pending } = useMailPreview(content ?? { body: md, signature: '' }, api.renderMail)
+  if (error) return <div className={className} role="alert">{L('预览失败：', 'Preview failed: ')}{errText(error)}</div>
+  return (
+    <div className={className} aria-busy={pending} dangerouslySetInnerHTML={{ __html: html || `<p style="color:var(--ter)">${pending ? L('正在生成预览…', 'Preparing preview…') : L('（空）', '(empty)')}</p>` }} onClick={(e) => {
+      const a = (e.target as Element).closest('a')
+      if (!a) return
+      e.preventDefault()
+      const href = (a.getAttribute('href') || '').trim()
+      if (/^(?:https?:|mailto:)/i.test(href)) api.openUrl(href).catch((err) => useApp.getState().toast(L(`链接打不开：${errText(err)}`, `Couldn't open the link: ${errText(err)}`), { kind: 'err' }))
+    }} />
+  )
+}
+
+export function Sheet({ children, onClose, className = '', label, pinned }: { children: ReactNode; onClose: () => void; className?: string; label: string; pinned?: boolean }) {
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) { e.stopPropagation(); onClose() } }
     window.addEventListener('keydown', h, true)
     return () => window.removeEventListener('keydown', h, true)
   }, [onClose])
   return createPortal(
-    <div className="scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="scrim" onMouseDown={(e) => { if (!pinned && e.target === e.currentTarget) onClose() }}>
+      {pinned && <div className="scrim-drag" data-tauri-drag-region />}
       <div className={`sheet sq ${className}`} role="dialog" aria-modal="true" aria-label={label}>{children}</div>
     </div>,
     document.body,
@@ -142,6 +161,44 @@ function Menu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[
       )}
     </div>,
     document.body,
+  )
+}
+
+/**
+ * 一行文字放不下（被 ellipsis 截断）时，悬浮显示全文
+ * 提示框用 portal 挂在 body 上：不会被卡片的 overflow 裁掉，长句子换行、自动留在窗口内
+ * 文字能放下就不显示，免得白冒一个多余的提示框
+ */
+export function TipText({ className, style, children }: { className?: string; style?: CSSProperties; children: ReactNode }) {
+  const ref = useRef<HTMLSpanElement>(null)
+  const box = useRef<HTMLDivElement>(null)
+  const [full, setFull] = useState('')
+  const [tip, setTip] = useState<string | null>(null)
+  const [pos, setPos] = useState<CSSProperties>({ left: 0, top: 0, visibility: 'hidden' })
+  // 原生 title 只作兜底：悬浮时摘掉，免得和自绘提示同时弹两个
+  useEffect(() => { setFull(ref.current?.textContent?.trim() ?? '') }, [children])
+  const onMouseEnter = () => {
+    const el = ref.current
+    if (!el) return
+    const text = el.textContent?.trim()
+    // 从 DOM 读当前文本：调用处不用把同一句话再写一遍
+    setTip(text && el.scrollWidth > el.clientWidth + 1 ? text : null)
+  }
+  useLayoutEffect(() => {
+    const b = box.current, el = ref.current
+    if (!tip || !b || !el) return
+    const r = el.getBoundingClientRect()
+    const w = b.offsetWidth, h = b.offsetHeight
+    // 左对齐到文字起点，再夹在窗口内；下面放不下就改到文字上方
+    const left = Math.min(Math.max(8, r.left), Math.max(8, innerWidth - w - 8))
+    const top = r.bottom + 6 + h > innerHeight - 8 ? Math.max(8, r.top - h - 6) : r.bottom + 6
+    setPos({ left, top, visibility: 'visible' })
+  }, [tip])
+  return (
+    <>
+      <span ref={ref} className={className} title={tip ? undefined : full || undefined} style={{ display: 'block', ...style }} onMouseEnter={onMouseEnter} onMouseLeave={() => setTip(null)}>{children}</span>
+      {tip && createPortal(<div className="tip-box" ref={box} style={pos}>{tip}</div>, document.body)}
+    </>
   )
 }
 

@@ -6,8 +6,8 @@ import { Icon } from '../icons'
 import { useApp, pendingSends } from '../store'
 import { api, errText, type Addr, type DraftIn } from '../lib/api'
 import { parseAddrs, validEmail, fullTime } from '../lib/format'
-import { mdPreview, mdToHtml, quoteText } from '../lib/md'
-import { Seg, Sheet, useMenu } from '../ui'
+import type { MailContent, MailQuote } from '../lib/mail-content'
+import { MdView, Seg, Sheet, useMenu } from '../ui'
 import { keyText } from '../lib/platform'
 import { L, EN } from '../lib/i18n'
 
@@ -22,7 +22,7 @@ export default function Compose() {
   const initial = useMemo(() => {
     const accountId = c.prefill?.accountId ?? base?.accountId ?? s.settings?.defaultAccount ?? s.accounts[0]?.id
     const self = new Set(s.accounts.map((a) => a.email.toLowerCase()))
-    let to: Addr[] = [], cc: Addr[] = [], subject = '', quote = ''
+    let to: Addr[] = [], cc: Addr[] = [], subject = '', quote: MailQuote | null = null
     if (base && (c.mode === 'reply' || c.mode === 'replyAll')) {
       to = [base.replyTo ? { name: '', email: base.replyTo } : { name: base.fromName, email: base.fromAddr }]
       if (c.mode === 'replyAll') {
@@ -30,23 +30,24 @@ export default function Compose() {
         cc = [...base.to, ...base.cc].filter((a) => { const k = a.email.toLowerCase(); if (self.has(k) || seen.has(k)) return false; seen.add(k); return true })
       }
       subject = /^re:/i.test(base.subject) ? base.subject : `Re: ${base.subject}`
-      quote = quoteText(base.text, EN ? `On ${fullTime(base.date)}, ${base.fromName ? `${base.fromName} <${base.fromAddr}>` : base.fromAddr} wrote:` : `在 ${fullTime(base.date)}，${base.fromName || base.fromAddr} 写道：`)
+      const who = base.fromName ? `${base.fromName} <${base.fromAddr}>` : base.fromAddr
+      quote = { header: EN ? `On ${fullTime(base.date)}, ${who} wrote:` : `在 ${fullTime(base.date)}，${who} 写道：`, text: base.text, html: base.html, reply: true }
     } else if (base && c.mode === 'forward') {
       subject = /^(fwd?|转发):/i.test(base.subject) ? base.subject : `Fwd: ${base.subject}`
-      quote = EN
-        ? `\n\n---------- Forwarded message ----------\nFrom: ${base.fromName} <${base.fromAddr}>\nDate: ${fullTime(base.date)}\nSubject: ${base.subject}\n\n${base.text}`
-        : `\n\n---------- 转发的邮件 ----------\n发件人：${base.fromName} <${base.fromAddr}>\n时间：${fullTime(base.date)}\n主题：${base.subject}\n\n${base.text}`
+      const who = base.fromName ? `${base.fromName} <${base.fromAddr}>` : base.fromAddr
+      quote = { header: EN
+        ? `---------- Forwarded message ----------\nFrom: ${who}\nDate: ${fullTime(base.date)}\nSubject: ${base.subject}`
+        : `---------- 转发的邮件 ----------\n发件人：${who}\n时间：${fullTime(base.date)}\n主题：${base.subject}`,
+        text: base.text, html: base.html, reply: false }
     }
     if (c.prefill?.to) to = parseAddrs(c.prefill.to)
     if (c.prefill?.subject != null) subject = c.prefill.subject
     const d = c.draft
     if (d) {
-      // 草稿里存的正文已经带着引用，原样恢复
-      return { accountId: d.accountId || accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.body, quote: '', files: d.attachments || [], replyMsg: d.replyMsg ?? null, mode: d.mode || 'new' }
+      // 后端已兼容旧草稿；结构化正文不包含签名、引用，重开和撤销发送无需切割字符串。
+      return { accountId: d.accountId || accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.content.body, quote: d.content.quote ?? null, files: d.attachments || [], replyMsg: d.replyMsg ?? null, mode: d.mode || 'new' }
     }
-    const sig = accountId ? me(accountId)?.signature : ''
-    const body = (c.prefill?.body ?? '') + (sig && !c.prefill?.body ? `\n\n${sig}` : '')
-    return { accountId, to, cc, bcc: [] as Addr[], subject, body, quote, files: [] as string[], replyMsg: base?.id ?? null, mode: c.mode === 'draft' ? 'new' : c.mode }
+    return { accountId, to, cc, bcc: [] as Addr[], subject, body: c.prefill?.body ?? '', quote, files: [] as string[], replyMsg: base?.id ?? null, mode: c.mode === 'draft' ? 'new' : c.mode }
   }, [c.key])
 
   const [accountId, setAccountId] = useState<number>(initial.accountId!)
@@ -54,6 +55,7 @@ export default function Compose() {
   const [showCc, setShowCc] = useState(initial.cc.length > 0 || initial.bcc.length > 0)
   const [subject, setSubject] = useState(initial.subject)
   const [body, setBody] = useState(initial.body)
+  const [showSignature, setShowSignature] = useState(false)
   const [showQuote, setShowQuote] = useState(false)
   const [mode, setMode] = useState<'edit' | 'preview'>('edit')
   const [files, setFiles] = useState<string[]>(initial.files)
@@ -68,9 +70,12 @@ export default function Compose() {
   const bodyRef = useRef<HTMLTextAreaElement>(null)
   const menu = useMenu()
 
+  const sig = me(accountId)?.signature || ''
+  const content: MailContent = useMemo(() => ({ body, signature: sig, quote: initial.quote }), [body, sig, initial.quote])
+
   const draft = (): DraftIn => ({
     id: draftId, accountId, to: rc.to, cc: rc.cc, bcc: rc.bcc, subject,
-    body: body + (initial.quote ? initial.quote : ''), html: '', replyMsg: initial.replyMsg, mode: initial.mode, attachments: files,
+    body, content, replyMsg: initial.replyMsg, mode: initial.mode, attachments: files,
   })
 
   // 自动存草稿：停止输入 2 秒后
@@ -133,7 +138,8 @@ export default function Compose() {
     s.refreshMeta()
   }
 
-  const placeholders = (body.match(/\[[^\]\n]{1,30}\]/g) || []).filter((p) => !/^\[[xX ]\]$/.test(p))
+  // 没填的占位：[日期] 这种。Markdown 的链接、图片 [文字](网址) 不算（签名里常有）；链接按钮插的 (https://) 还没填网址，照样提醒
+  const placeholders = (`${body}\n${sig}`.match(/\[[^\]\n]{1,30}\](?!\((?:https?:\/\/|mailto:|tel:)[^\s)])/gi) || []).filter((p) => !/^\[[xX ]\]$/.test(p))
   const facts = base?.ai?.facts || []
 
   const send = async () => {
@@ -150,15 +156,14 @@ export default function Compose() {
     if (!subject.trim() && !await ask(L('没有主题，确定发送吗？', 'No subject. Send anyway?'))) return
     const d = draft()
     try { await api.precheckSend(d) } catch (e) { s.toast(errText(e), { kind: 'err', ttl: 8000 }); return }
-    d.html = mdToHtml(d.body)
     // 先存草稿：发送失败或撤销时内容不会丢
-    try { d.id = await api.saveDraft({ ...d, html: '' }) } catch { /* */ }
+    try { d.id = await api.saveDraft(d) } catch { /* */ }
     s.set({ compose: null })
     const secs = s.settings?.undoSendSecs ?? 5
     let cancelled = false
     let left = secs
     let lastToast = 0
-    const reopen = () => s.openCompose('draft', null, { draftId: d.id, draft: { ...d, html: '' } })
+    const reopen = () => s.openCompose('draft', null, { draftId: d.id, draft: d })
     const show = () => { if (lastToast) s.drop(lastToast); lastToast = s.toast(L(`正在发送… `, `Sending… `), { action: { label: L(`撤销 ${left}`, `Undo ${left}`), run: () => { cancelled = true; reopen() } }, ttl: 1100 }) }
     if (secs > 0) {
       // 倒计时期间不能重新加载界面（换语言），否则信就停在草稿里发不出去
@@ -197,7 +202,7 @@ export default function Compose() {
   }
 
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); send() } }
+    const h = (e: KeyboardEvent) => { if (!document.querySelector('dialog[open]') && (e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); send() } }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   })
@@ -205,8 +210,8 @@ export default function Compose() {
   const title = c.mode === 'reply' || c.mode === 'replyAll' ? L(`回复 ${base?.fromName || base?.fromAddr || ''}`, `Reply to ${base?.fromName || base?.fromAddr || ''}`) : c.mode === 'forward' ? L('转发', 'Forward') : L('新邮件', 'New email')
 
   return (
-    <Sheet onClose={close} className="compose" label={title}>
-      <div className="c-bar">
+    <Sheet onClose={close} className="compose" label={title} pinned>
+      <div className="c-bar" data-tauri-drag-region>
         <button className="btn primary sq" onClick={send}><Icon name="send" size={15} />{L('发送', 'Send')}</button>
         <span style={{ width: .5, height: 18, background: 'var(--line)', margin: '0 6px' }} />
         <button className="tb" aria-label={L('添加附件', 'Attach files')} data-tip={L('添加附件', 'Attach files')} onClick={async () => {
@@ -214,7 +219,7 @@ export default function Compose() {
           if (r) setFiles((f) => [...f, ...(Array.isArray(r) ? r : [r]).filter((p) => !f.includes(p))])
         }}><Icon name="clip" /></button>
         <button className="tb" aria-label={L('舍弃草稿', 'Discard draft')} data-tip={L('舍弃草稿', 'Discard draft')} onClick={async () => { if (!body.trim() || await ask(L('舍弃这封草稿？', 'Discard this draft?'))) discard() }}><Icon name="trash" /></button>
-        <div className="grow truncate" style={{ textAlign: 'center', fontSize: 13, fontWeight: 600 }}>{title}</div>
+        <div className="grow truncate" data-tauri-drag-region style={{ textAlign: 'center', fontSize: 13, fontWeight: 600 }}>{title}</div>
         {s.aiConfigured ? (
           <button className="btn sm sq" style={{ background: aiOpen ? 'var(--sel)' : 'transparent', boxShadow: 'none' }} aria-pressed={aiOpen} onClick={() => setAiOpen(!aiOpen)}><Icon name="sparkle" size={15} />{L('AI 助手', 'AI assistant')}</button>
         ) : (
@@ -226,16 +231,7 @@ export default function Compose() {
         <div className="c-edit" style={{ position: 'relative' }}>
           <div className="c-field">
             <span className="k">{L('发件人', 'From')}</span>
-            <select value={accountId} onChange={(e) => {
-              const next = Number(e.target.value)
-              const oldSig = me(accountId)?.signature || ''
-              const newSig = me(next)?.signature || ''
-              if (oldSig !== newSig) {
-                if (oldSig && body.endsWith(`\n\n${oldSig}`)) setBody(body.slice(0, -oldSig.length - 2) + (newSig ? `\n\n${newSig}` : ''))
-                else if (!oldSig && newSig && !body.includes(newSig)) setBody(`${body}\n\n${newSig}`)
-              }
-              setAccountId(next); touch()
-            }} className="field" style={{ width: 'auto', height: 28, fontSize: 13, padding: '0 8px', maxWidth: '100%' }} aria-label={L('发件账号', 'Sending account')}>
+            <select value={accountId} onChange={(e) => { setAccountId(Number(e.target.value)); touch() }} className="field" style={{ width: 'auto', height: 28, fontSize: 13, padding: '0 8px', maxWidth: '100%' }} aria-label={L('发件账号', 'Sending account')}>
               {s.accounts.map((a) => <option key={a.id} value={a.id}>{(a.label ? `${a.label} · ` : '') + a.email}</option>)}
             </select>
           </div>
@@ -255,16 +251,28 @@ export default function Compose() {
             )}
           </div>
           {mode === 'edit' ? (
-            <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('正文', 'Message body')} spellCheck={false} />
+            <>
+              <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('正文', 'Message body')} spellCheck={false} />
+              {sig && (
+                <div className="c-sig">
+                  <button type="button" className="btn sm sq" style={{ justifySelf: 'start', background: 'var(--well)', boxShadow: 'none', color: 'var(--sec)' }} aria-expanded={showSignature} aria-controls="c-signature" onClick={() => setShowSignature((shown) => !shown)}>
+                    {showSignature ? L('收起签名（发送时自动添加）', 'Hide signature (added when sent)') : L('··· 显示签名（发送时自动添加）', '··· Show signature (added when sent)')}
+                  </button>
+                  <div id="c-signature" hidden={!showSignature}>
+                    {showSignature && <MdView className="sig-preview" md={sig} />}
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
-            <div className="preview" dangerouslySetInnerHTML={{ __html: mdPreview(body) || `<p style="color:var(--ter)">${L('（空）', '(empty)')}</p>` }} />
+            <MdView className="preview" content={content} />
           )}
-          {initial.quote && (
+          {mode === 'edit' && initial.quote && (
             <div style={{ padding: '0 24px 8px' }}>
               <button className="btn sm sq" style={{ background: 'var(--well)', boxShadow: 'none', color: 'var(--sec)' }} onClick={() => setShowQuote(!showQuote)}>
-                {showQuote ? L('收起引用的原邮件', 'Hide original email') : L(`··· 显示${c.mode === 'forward' ? '转发' : '引用'}的原邮件`, `··· Show ${c.mode === 'forward' ? 'forwarded' : 'quoted'} email`)}
+                {showQuote ? L('收起引用的原邮件', 'Hide original email') : L(`··· 显示${initial.mode === 'forward' ? '转发' : '引用'}的原邮件`, `··· Show ${initial.mode === 'forward' ? 'forwarded' : 'quoted'} email`)}
               </button>
-              {showQuote && <pre style={{ margin: '8px 0 0', maxHeight: 160, overflow: 'auto', fontFamily: 'var(--sans)', fontSize: 12.5, color: 'var(--sec)', whiteSpace: 'pre-wrap', borderLeft: '2px solid var(--line)', paddingLeft: 10 }}>{initial.quote.trim()}</pre>}
+              {showQuote && <div style={{ marginTop: 8, maxHeight: 240, overflow: 'auto' }}><MdView className="sig-preview" content={{ body: '', signature: '', quote: initial.quote }} /></div>}
             </div>
           )}
           <div className="c-foot">

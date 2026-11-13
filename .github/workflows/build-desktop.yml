@@ -1,0 +1,111 @@
+name: build-desktop
+
+on:
+  push:
+    branches: ['ci/**']
+  workflow_dispatch:
+    inputs:
+      signed:
+        description: 'Build and verify signed updater files without publishing a Release'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+      signed:
+        type: boolean
+        default: false
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      KOJOOMAIL_GOOGLE_CLIENT_SECRET:
+        required: false
+      APPLE_CERTIFICATE:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: bundle (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          workspaces: src-tauri -> target
+          key: bundle-${{ matrix.target }}
+          cache-on-failure: true
+      - run: npm ci
+      - run: npm run release:check
+      - run: npm run build
+      - name: Build MCP bridge
+        run: cargo build --locked --release --manifest-path src-tauri/Cargo.toml -p kojoomail-mcp --target ${{ matrix.target }}
+      - name: Stage MCP bridge
+        run: node scripts/desktop.mjs stage ${{ matrix.target }} release
+      - name: Bundle installer and updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.signed && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.signed && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          KOJOOMAIL_GOOGLE_CLIENT_ID: ${{ vars.KOJOOMAIL_GOOGLE_CLIENT_ID }}
+          KOJOOMAIL_GOOGLE_CLIENT_SECRET: ${{ secrets.KOJOOMAIL_GOOGLE_CLIENT_SECRET }}
+          KOJOOMAIL_MS_CLIENT_ID: ${{ vars.KOJOOMAIL_MS_CLIENT_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: node scripts/desktop.mjs bundle ${{ matrix.target }} release ${{ inputs.signed && 'signed' || 'preview' }}
+      - name: Check and collect assets
+        run: node scripts/release.mjs collect ${{ matrix.target }} ${{ inputs.signed && 'signed' || 'preview' }}
+      - name: Verify macOS app and bridge architectures
+        if: ${{ runner.os == 'macOS' }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          app="src-tauri/target/$TARGET/release/bundle/macos/Kojoo Mail.app"
+          arch=arm64
+          if [[ "$TARGET" == x86_64-* ]]; then arch=x86_64; fi
+          lipo "$app/Contents/MacOS/kojoomail" -verify_arch "$arch"
+          lipo "$app/Contents/MacOS/kojoomail-mcp" -verify_arch "$arch"
+          codesign --verify --deep --strict "$app"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-${{ matrix.target }}
+          path: release-assets/${{ matrix.target }}/*
+          if-no-files-found: error
+          retention-days: 14

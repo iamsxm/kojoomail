@@ -2,6 +2,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { L } from './i18n'
+import type { MailContent, RenderedMail } from './mail-content'
 
 export type Addr = { name: string; email: string }
 export type Account = {
@@ -13,6 +14,8 @@ export type Account = {
   focus: string[]
   /** full：完整批注；classify：只分类 */
   aiLevel: 'full' | 'classify'
+  /** MCP：本账号是否允许 agent 读 / 改邮箱状态 / 发信 */
+  mcpRead: boolean; mcpWrite: boolean; mcpSend: boolean
 }
 
 /** 可以选作常用分类的 AI 类别（「其他」不当页签） */
@@ -23,12 +26,32 @@ export type Status = {
   lastOk: number; fails: number; progressDone: number; progressTotal: number; log: string[]
 }
 export type Settings = {
+  skippedUpdateVersion: string
   theme: 'system' | 'light' | 'dark'; fontSize: number; density: 'compact' | 'standard' | 'cozy'; serifTitles: boolean
   autostart: boolean; closeToTray: boolean; defaultAccount: number | null; notify: 'important' | 'all' | 'none'
   remoteImages: 'ask' | 'always'; undoSendSecs: number
   notifyPreview: boolean; aiProvider: string; aiBase: string; aiModel: string; aiModelFine: string; aiModelBackup: string; aiAuto: boolean; aiScope: 'skip_bulk' | 'all' | 'important'; aiDailyLimit: number
+  /** 自定义要求：追加到批注、起草回复、跟进邮件的提示词末尾 */
+  aiCustom: string
   language: 'auto' | 'zh' | 'en'
+  /** MCP 总开关：关着的时候连端口都不监听 */
+  mcpEnabled: boolean
+  /** 全局三轴：读邮件 / 改邮箱状态 / 发信 */
+  mcpRead: boolean; mcpWrite: boolean; mcpSend: boolean
+  /** draft：只存草稿；confirm：每次弹桌面确认。没有无人值守直发 */
+  mcpSendMode: 'draft' | 'confirm'
+  /** 0＝随机端口 */
+  mcpPort: number
+  mcpBodyMaxChars: number
+  /** 允许 MCP 调用会烧 AI 额度的工具 */
+  mcpAllowAi: boolean
+  /** 按会话显示：同一来回的邮件在列表里合成一行 */
+  conversationView: boolean
+  /** 代理：跟随系统 / 不用 / 自定义地址（HTTP 代理，主机:端口） */
+  proxyMode: 'system' | 'off' | 'custom'; proxyAddr: string
 }
+/** 设置页展示用的连接信息；没开启时 port/url 为 null */
+export type McpInfo = { running: boolean; port: number | null; url: string | null; token: string | null; proxyPath: string | null }
 export type Counts = { inboxUnread: number; important: number; todos: number; later: number; drafts: number; bills: number; followups: number }
 export type CatCount = { cat: string; total: number; unread: number }
 export type Boot = { accounts: Account[]; folders: Folder[]; settings: Settings; status: Status[]; aiConfigured: boolean; aiUsedToday: number; counts: Counts; version: string; oauth: string[]; lang: 'zh' | 'en' }
@@ -36,6 +59,8 @@ export type MsgLite = {
   id: number; accountId: number; folderId: number; role: string; fromName: string; fromAddr: string; to: Addr[]; subject: string; snippet: string
   date: number; seen: boolean; flagged: boolean; answered: boolean; hasAtt: boolean; bulk: boolean
   aiCategory: string; aiPriority: string; aiSummary: string; openTodos: number; later: number | null
+  /** 按会话显示时：这一行代表的整串会话（count 是封数，who 是参与的人） */
+  thread?: { id: number; count: number; unread: number; who: string[]; hasAtt: boolean; flagged: boolean }
 }
 export type Fact = { k: string; v: string }
 export type AiResult = { state: number; summary: string; category: string; priority: string; reason: string; facts: Fact[]; reply: string; replyLang: string; model: string; error: string }
@@ -44,9 +69,10 @@ export type Todo = {
   source: string; srcSubject: string; srcFrom: string; created: number
 }
 export type Att = { idx: number; name: string; size: number; mime: string; inline: boolean }
-export type MsgFull = MsgLite & { cc: Addr[]; replyTo: string; msgid: string; refs: string; inReplyTo: string; text: string; html: string; atts: Att[]; ai: AiResult | null; aiPending: boolean; todos: Todo[] }
-export type Draft = { id: number; accountId: number | null; to: Addr[]; cc: Addr[]; bcc: Addr[]; subject: string; body: string; replyMsg: number | null; mode: string; updated: number; attachments: string[] }
-export type ListQuery = { view: 'all' | 'important' | 'later' | 'bills' | 'followup' | 'sent' | 'folder'; accountId?: number | null; folderId?: number | null; filter?: string; search?: string; maxId?: number | null; offset: number; limit: number }
+export type MsgFull = MsgLite & { cc: Addr[]; replyTo: string; msgid: string; refs: string; inReplyTo: string; text: string; html: string; atts: Att[]; ai: AiResult | null; aiPending: boolean; todos: Todo[]; code: string }
+export type Draft = { id: number; accountId: number | null; to: Addr[]; cc: Addr[]; bcc: Addr[]; subject: string; body: string; content: MailContent; replyMsg: number | null; mode: string; updated: number; attachments: string[] }
+export type UpdateInfo = { version: string; notes: string }
+export type ListQuery = { view: 'all' | 'important' | 'later' | 'bills' | 'followup' | 'sent' | 'folder'; accountId?: number | null; folderId?: number | null; filter?: string; search?: string; maxId?: number | null; threads?: boolean; offset: number; limit: number }
 export type DigestItem = { id: number; accountId: number; who: string; subject: string; summary: string; date: number; seen: boolean; high: boolean }
 export type DigestTodo = { id: number; msgId: number | null; text: string; due: number | null }
 export type Digest = { reply: DigestItem[]; bills: DigestItem[]; todos: DigestTodo[]; followups: DigestItem[]; followupTotal: number; bulkUnread: number; newCount: number }
@@ -58,7 +84,10 @@ export type AccountIn = {
   imapHost: string; imapPort: number; smtpHost: string; smtpPort: number; smtpTls: boolean; saveSent: boolean
   oauthTicket?: string
 }
-export type DraftIn = { id?: number | null; accountId: number; to: Addr[]; cc: Addr[]; bcc: Addr[]; subject: string; body: string; html: string; replyMsg?: number | null; mode: string; attachments: string[] }
+export type DraftIn = { id?: number | null; accountId: number; to: Addr[]; cc: Addr[]; bcc: Addr[]; subject: string; body: string; content: MailContent; replyMsg?: number | null; mode: string; attachments: string[] }
+export type RuleCond = { field: 'from' | 'to' | 'subject' | 'attachment'; op: 'contains' | 'not_contains' | 'equals' | 'has' | 'none'; value: string }
+export type RuleAction = { kind: 'move' | 'archive' | 'junk' | 'read' | 'unread' | 'flag' | 'unflag'; folder: string }
+export type Rule = { id: number; name: string; enabled: boolean; accountId: number | null; matchAll: boolean; conds: RuleCond[]; actions: RuleAction[]; stop: boolean }
 
 const call = <T,>(cmd: string, args?: Record<string, unknown>) => invoke<T>(cmd, args)
 
@@ -78,6 +107,8 @@ export const api = {
   followupSet: (id: number, off: boolean) => call<void>('followup_set', { id, off }),
   aiFollowup: (id: number) => call<string>('ai_followup', { id }),
   get: (id: number) => call<MsgFull>('get_message', { id }),
+  /** 这封邮件所在的整串会话（按时间从早到晚） */
+  thread: (id: number) => call<{ id: number; accountId: number; items: MsgLite[] }>('thread_messages', { id }),
   mark: (ids: number[], p: { seen?: boolean; flagged?: boolean }) => call<void>('mark', { ids, seen: p.seen ?? null, flagged: p.flagged ?? null }),
   snooze: (ids: number[], until: number | null) => call<void>('snooze', { ids, until }),
   move: (ids: number[], target: string) => call<number>('move_to', { ids, target }),
@@ -85,15 +116,20 @@ export const api = {
   deleteForever: (ids: number[]) => call<void>('delete_forever', { ids }),
   openFolder: (folderId: number) => call<void>('open_folder', { folderId }),
   syncNow: () => call<void>('sync_now'),
+  rules: () => call<Rule[]>('rule_list'),
+  ruleSave: (rule: Rule) => call<number>('rule_save', { rule }),
+  ruleDelete: (id: number) => call<void>('rule_delete', { id }),
+  ruleOrder: (ids: number[]) => call<void>('rule_order', { ids }),
   testAccount: (input: AccountIn) => call<void>('test_account', { input }),
   addAccount: (input: AccountIn) => call<number>('add_account', { input }),
-  updateAccount: (id: number, patch: Partial<{ displayName: string; label: string; color: string; signature: string; aiAllowed: boolean; password: string; oauthTicket: string; focus: string[]; aiLevel: 'full' | 'classify' }>) => call<void>('update_account', { id, patch }),
+  updateAccount: (id: number, patch: Partial<{ displayName: string; label: string; color: string; signature: string; aiAllowed: boolean; password: string; oauthTicket: string; focus: string[]; aiLevel: 'full' | 'classify'; mcpRead: boolean; mcpWrite: boolean; mcpSend: boolean }>) => call<void>('update_account', { id, patch }),
   /** 打开浏览器一键登录，完成后返回票据和登录的邮箱 */
   oauthLogin: (provider: string, hint?: string) => call<{ ticket: string; email: string }>('oauth_login', { provider, hint: hint ?? null }),
   oauthCancel: () => call<void>('oauth_cancel'),
   removeAccount: (id: number) => call<void>('remove_account', { id }),
   retryAccount: (id: number) => call<void>('retry_account', { id }),
   send: (d: DraftIn) => call<void>('send_mail', { d }),
+  renderMail: (content: MailContent) => call<RenderedMail>('render_mail', { content }),
   saveDraft: (d: DraftIn) => call<number>('save_draft', { d }),
   drafts: () => call<Draft[]>('list_drafts'),
   deleteDraft: (id: number) => call<void>('delete_draft', { id }),
@@ -115,6 +151,9 @@ export const api = {
   /** 翻译邮件正文：items 是正文里取出的文字段，按原顺序返回译文（后端按邮件+语言缓存） */
   aiTranslate: (id: number, lang: string, items: string[]) => call<string[]>('ai_translate', { id, lang, items }),
   saveSettings: (s: Settings) => call<Settings>('save_settings', { s }),
+  mcpConfig: () => call<McpInfo>('mcp_config'),
+  /** 换 token：已配置的 agent 全部失效，要重新复制配置 */
+  mcpRegenerateToken: () => call<McpInfo>('mcp_regenerate_token'),
   /** 当前界面语言（「跟随系统」由后端按系统语言定） */
   uiLang: () => call<'zh' | 'en'>('ui_lang'),
   setAiKey: (key: string) => call<boolean>('set_ai_key', { key }),
@@ -122,7 +161,7 @@ export const api = {
   aiTest: () => call<{ ms: number; model: string }>('ai_test'),
   aiModels: () => call<string[]>('ai_models'),
   exportDiagnostics: () => call<string>('export_diagnostics'),
-  checkUpdate: () => call<{ version: string; notes: string } | null>('check_update'),
+  checkUpdate: () => call<UpdateInfo | null>('check_update'),
   installUpdate: () => call<void>('install_update'),
   statusList: () => call<Status[]>('status_list'),
   showMain: (boot = false) => call<void>('show_main', { boot }),

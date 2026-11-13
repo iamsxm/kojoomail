@@ -1,0 +1,26 @@
+[package]
+name = "kojoomail-mcp"
+version = "0.4.0"
+description = "Kojoo Mail MCP stdio bridge"
+license = "AGPL-3.0-or-later"
+edition = "2021"
+
+[[bin]]
+name = "kojoomail-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# 只做传输桥接：不含业务逻辑、不做权限判断，工具清单从应用透传
+rmcp = { version = "3.9", default-features = false, features = [
+  "server",
+  "client",
+  "macros",
+  "transport-io",
+  "transport-streamable-http-client-reqwest",
+  "reqwest-native-tls",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+dirs = "5"

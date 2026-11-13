@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ekoouu/kojoomail/releases/latest"><b>下载</b></a> ·
+  <a href="https://github.com/iamsxm/kojoomail/releases/latest"><b>下载 fork 版本</b></a> ·
   <a href="#能做什么">功能</a> ·
   <a href="#隐私">隐私</a> ·
   <a href="#从源码编译">从源码编译</a>
@@ -23,6 +23,8 @@
 
 ---
 
+本分支为保留独立 MCP 实现的 fork，已合入官方 0.3.2 非 MCP 更新。开发、同步上游、版本标签发布与签名配置见 [GitHub 工作流程](docs/github-workflow.zh-CN.md)。fork 从 0.4.0 起使用独立版本、更新源和公钥；首次使用请手动安装本 fork 的发布包。
+
 每天在 QQ 邮箱、公司邮箱、Gmail、Outlook 之间来回切，重要的询盘被通知和广告淹掉，回一封英文邮件要先翻译再斟酌——**Kojoo Mail 把这些合到一个窗口里**：所有账号的邮件按时间排在一起，AI 先帮你读一遍，告诉你哪封要紧、要做什么、可以怎么回。
 
 它是一个桌面软件，邮件只存在你自己的电脑上。AI 用你自己的密钥，不经过我们的服务器。界面有中文和英文，默认跟随系统语言，可以在「设置 → 通用」里切换。
@@ -33,7 +35,7 @@
 
 QQ、网易 163/126、Gmail、Outlook、iCloud、企业邮箱和任何支持 IMAP 的邮箱。所有账号按时间排在一起，每个账号一个颜色；回信时自动用收信的那个身份发出，不会用错邮箱。
 
-Gmail 和 Outlook 支持**一键登录**（浏览器里授权，不用填密码）。软件跟随系统代理连接邮件服务器，国内用 Gmail 不用开全局。
+Gmail 和 Outlook 支持**一键登录**（浏览器里授权，不用填密码）。软件默认跟随系统代理连接邮件服务器，国内用 Gmail 不用开全局；系统代理不稳定时，也可以在「设置 → 通用 → 代理」里自己填代理地址，或者选不用代理。
 
 ### AI 批注：打开之前就知道这封信要干嘛
 
@@ -62,7 +64,7 @@ Gmail 和 Outlook 支持**一键登录**（浏览器里授权，不用填密码�
 - 换个语气（专业 / 友好 / 简洁）重写，润色、翻译、缩短一半
 - **要点核对**：对照来信的要点，检查回复有没有漏掉数量、条款、日期
 - 支持 Markdown，发送时自动排版；点发送后几秒内可以撤销
-- **AI 只起草，从不替你发信**
+- **应用内 AI 只起草，从不替你发信**
 
 ### 待办：从邮件里来，回到邮件里去
 
@@ -78,11 +80,27 @@ AI 从邮件里提出来的待办和你自己加的放在一起，按今天、�
 | **待跟进** | 你发出去 3 天以上、对方还没回的邮件 |
 | **账单发票** | 各账号的账单、发票、扣费提醒合在一起 |
 | **稍后处理** | 把邮件暂时收起来，到点再出现 |
+| **会话视图** | 同一来回的邮件在列表里合成一行，点开按时间看整串；回复、归档、删除仍只针对单封（默认关闭，在「设置 → 通用」打开） |
+| **邮件规则** | 新邮件到达收件箱时，按发件人、收件人、主题、有没有附件自动移动到文件夹、归档、移到垃圾邮件、标为已读或重点；规则在本机执行，不会删除邮件，也不会自动发信 |
+| **验证码** | 收到验证码邮件时，通知里直接显示验证码，打开邮件可一键复制；本机识别，不经过 AI |
 | **问邮箱** | 在搜索框里直接提问，比如「上次给 Marco 报的价是多少？」，AI 从你的邮件里找答案并标出处 |
 | **深色模式** | 跟随系统，或者手动切换；Windows 11 上有磨砂玻璃效果 |
 | **键盘操作** | `J` `K` 上下、`E` 归档、`R` 回复、`C` 写信、`Ctrl K` 搜索 |
 
 <img alt="深色模式" src="docs/images/feature-dark.jpg">
+
+### 让 AI agent 读你的邮件（MCP）
+
+设置 → MCP 服务，把生成的配置粘进 Claude Code、Codex、Cursor、Qoder 等任意支持 MCP 的 agent，它就能搜邮件、读正文、查联系人和待办、存附件。走的是标准 MCP 协议，没有客户端专属适配。
+
+**默认关闭**，关着的时候不占端口、不跑后台任务。开启后：
+
+- 只监听本机 `127.0.0.1`，局域网访问不到；每个请求都要带令牌
+- 读、写、发三条权限各自独立，每条都要「全局 + 每账号」两层都开
+- 写信默认**只存草稿**；改成「每次确认后发送」后，每封信发出前都会弹桌面确认框，完整列出收件人和正文开头，你点允许才发。**没有无人值守直发**
+- 永久删除在任何设置下都要确认
+
+安全模型详见 [SECURITY.md](SECURITY.md)。
 
 ### 省资源
 
@@ -110,11 +128,13 @@ Windows 任务管理器里的内存（作者日常使用，Windows 11，2026 年
 
 在「设置 → AI 与模型」选一个服务商，填上你自己的密钥就能用。任何兼容 OpenAI 接口的服务都可以：DeepSeek、通义千问、Kimi、OpenAI 有现成选项，其他兼容接口（包括你自己部署的模型）填地址就行。每天有分析上限，可以自己调。
 
+在「自定义要求」里可以写下你的偏好，比如回复的语气、称呼、更关注哪类信息，AI 写批注、起草回复和跟进邮件时会参考。
+
 不配 AI 也能用：它就是一个干净、省资源的多账号邮件客户端。
 
 ## 下载
 
-到 **[Releases](https://github.com/ekoouu/kojoomail/releases/latest)** 下载最新版：
+到本 fork 的 **[Releases](https://github.com/iamsxm/kojoomail/releases/latest)** 下载已发布版本：
 
 | 系统 | 文件 |
 |---|---|
@@ -138,7 +158,7 @@ bash scripts/build-mac.sh          # macOS（在 Mac 上跑）
 ```
 
 - Gmail / Outlook 一键登录需要你自己申请客户端 ID，见 [docs/oauth-setup.md](docs/oauth-setup.md)；不申请也能编译，Gmail 用应用专用密码登录
-- **自己改代码再分发的话**：把 `src-tauri/tauri.conf.json` 里 `plugins.updater` 的 `pubkey` 和 `endpoints` 换成你自己的（`tauri signer generate` 生成密钥），或者删掉这一段，否则你的版本会提示用户更新到官方版
+- 本 fork 已配置独立更新源、公钥及 Actions 签名 Secret。维护者请恢复原私钥备份，不要重新生成；若再次 fork 后独立发行，应配置自己的更新源和密钥，见 [GitHub 工作流程](docs/github-workflow.zh-CN.md)。
 - README 里的截图用演示数据生成：`scripts/screenshots/`
 
 | 目录 | 内容 |
@@ -154,9 +174,13 @@ bash scripts/build-mac.sh          # macOS（在 Mac 上跑）
 
 欢迎提 Issue 和 Pull Request。提交前请看 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
+接下来打算做什么、哪些已经在做，见 [路线图](https://github.com/ekoouu/kojoomail/issues/6)。每一版改了什么，见 [Releases](https://github.com/ekoouu/kojoomail/releases)。
+
 ## 致谢
 
 感谢 [LINUX DO](https://linux.do) 社区，项目最早在这里分享和收集反馈。
+
+感谢贡献代码的朋友：[@Birdy0109](https://github.com/Birdy0109)。
 
 ## 许可证
 

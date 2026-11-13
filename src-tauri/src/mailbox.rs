@@ -86,24 +86,21 @@ impl Worker {
 }
 
 /// 移动最终失败：把本地占位挪回原文件夹，下次同步按服务器实际情况对账
-fn rollback_move(ctx: &Ctx, account_id: i64, ids: &[i64]) {
+fn rollback_move(ctx: &Ctx, account_id: i64, ids: &[i64]) -> Result<()> {
     let st = ctx.store.lock().unwrap();
-    for id in ids {
-        let _ = st.conn.execute(
-            "UPDATE messages SET folder_id=orig_folder, uid=orig_uid, orig_folder=NULL, orig_uid=NULL WHERE id=? AND uid<0 AND orig_folder IS NOT NULL",
-            [id],
-        );
-    }
-    let _ = st.refresh_counts(account_id);
+    st.rollback_moves(account_id, ids)?;
     drop(st);
     let _ = ctx.app.emit("mail-changed", serde_json::json!({ "accountId": account_id }));
+    Ok(())
 }
 
 fn give_up(ctx: &Ctx, account_id: i64, op: Op) {
     match op {
         Op::Move { ids, .. } => {
-            log_line(ctx, account_id, crate::i18n::t("移动邮件多次失败，已放回原文件夹", "Moving emails failed several times; they're back in their original folder").into());
-            rollback_move(ctx, account_id, &ids);
+            match rollback_move(ctx, account_id, &ids) {
+                Ok(()) => log_line(ctx, account_id, crate::i18n::t("移动邮件多次失败，已放回原文件夹", "Moving emails failed several times; they're back in their original folder").into()),
+                Err(e) => log_line(ctx, account_id, tr!("移动邮件失败，本地恢复出错：{e}", "Moving emails failed; restoring the local messages failed: {e}")),
+            }
         }
         Op::Append { role, .. } => log_line(ctx, account_id, tr!("保存到「{role}」文件夹失败", "Couldn't save to the \"{role}\" folder")),
         _ => log_line(ctx, account_id, crate::i18n::t("有一个操作多次失败，已放弃", "An action failed several times and was dropped").into()),
@@ -369,6 +366,7 @@ async fn run(ctx: Arc<Ctx>, id: i64, rx: mpsc::UnboundedReceiver<Op>, wake: Arc<
                     last_full: 0,
                     rx: rx.take().unwrap(),
                     backlog: std::mem::take(&mut backlog),
+                    skip_rules: false,
                 };
                 let r = w.serve(&wake, &stop).await;
                 if let Some(s) = w.s.take() {
@@ -406,6 +404,8 @@ struct SessionWorker {
     last_full: i64,
     rx: mpsc::UnboundedReceiver<Op>,
     backlog: Backlog,
+    /// Op::Move 同步目标文件夹时为真：本机移动带进来的信不跑邮件规则
+    skip_rules: bool,
 }
 
 #[derive(Clone)]
@@ -698,9 +698,12 @@ impl SessionWorker {
     async fn sync_folder(&mut self, f: &FolderRow, notify_new: bool) -> Result<()> {
         let mb = self.select(&f.path).await?;
         let uv = mb.uid_validity.unwrap_or(0) as i64;
+        let rebuilt = f.uidvalidity != 0 && uv != 0 && f.uidvalidity != uv;
+        // 第一次同步这个文件夹（不是「本地刚好清空了」）才算首次，首次不发提醒
+        let initial = f.last_sync == 0;
         let (local_count, local_max, local_min): (i64, i64, i64) = {
             let st = self.ctx.store.lock().unwrap();
-            if f.uidvalidity != 0 && uv != 0 && f.uidvalidity != uv {
+            if rebuilt {
                 // 服务器重建了文件夹：本地缓存作废
                 let ids: Vec<i64> = {
                     let mut q = st.conn.prepare("SELECT id FROM messages WHERE folder_id=?")?;
@@ -730,8 +733,6 @@ impl SessionWorker {
             v.sort_unstable_by(|a, b| b.cmp(a));
             v
         };
-        // 第一次同步这个文件夹（不是「本地刚好清空了」）才算首次，首次不发提醒
-        let initial = f.last_sync == 0;
         let mut inserted = vec![];
         for chunk in new_uids.chunks(150) {
             let set = chunk.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
@@ -778,6 +779,8 @@ impl SessionWorker {
                 )?;
                 if n > 0 {
                     let id = tx.last_insert_rowid();
+                    // 定会话编号（要在取到 id 之后：里面也会插入行）
+                    crate::thread::assign(&tx, self.cfg.id, id, &h.msgid, &h.in_reply_to, &h.refs)?;
                     let people = format!("{} {} {}", h.from.name, h.from.email, h.to.iter().map(|a| format!("{} {}", a.name, a.email)).collect::<Vec<_>>().join(" "));
                     tx.execute("INSERT INTO msg_fts(rowid, subject, people, body) VALUES(?,?,?,'')", params![id, h.subject, people])?;
                     inserted.push((id, seen, h.bulk, date));
@@ -833,6 +836,16 @@ impl SessionWorker {
             tx.commit()?;
             st.delete_messages(&gone)?;
         }
+        // 邮件规则只对收件箱里这次新到的信跑一次；首次同步、服务器重建文件夹后整批重拉的、本机移动带进来的都不算
+        let mut quiet = HashSet::new();
+        if f.role == "inbox" && !initial && !rebuilt && !self.skip_rules && !inserted.is_empty() {
+            let ids: Vec<i64> = inserted.iter().map(|x| x.0).collect();
+            let (ops, q) = crate::rules::run(&self.ctx, self.cfg.id, f.id, &f.path, &ids);
+            for op in ops {
+                self.backlog.push_back((op, 0));
+            }
+            quiet = q;
+        }
         {
             let st = self.ctx.store.lock().unwrap();
             st.conn.execute("UPDATE folders SET last_sync=? WHERE id=?", params![now(), f.id])?;
@@ -842,7 +855,7 @@ impl SessionWorker {
 
         // 3. 新邮件提醒（首次同步不提醒；未读、两天内的才算）
         if notify_new && !initial {
-            let fresh: Vec<i64> = inserted.iter().filter(|(_, seen, _, date)| !seen && now() - date < 2 * 86400).map(|x| x.0).collect();
+            let fresh: Vec<i64> = inserted.iter().filter(|(id, seen, _, date)| !seen && now() - date < 2 * 86400 && !quiet.contains(id)).map(|x| x.0).collect();
             if !fresh.is_empty() {
                 let _ = self.ctx.newmail_tx.send(fresh);
             }
@@ -874,6 +887,7 @@ impl SessionWorker {
             if self.fetch_body(id, &inbox.path, uid).await.is_err() {
                 break;
             }
+            crate::ai::code_ready(&self.ctx, id);
             let _ = self.ctx.ai_tx.send(crate::ai::Job::Auto(id));
         }
     }
@@ -933,10 +947,9 @@ impl SessionWorker {
                 self.select(&from).await?;
                 // 分批发：一次几千个 UID 拼成的命令有的服务器会拒收。重试时已经移走的 UID 在原文件夹里不存在，服务器按空操作处理
                 for set in uid_sets(&uids) {
-                    if self.caps.contains("MOVE") {
-                        self.sess().uid_mv(&set, &to).await?;
-                    } else {
-                        self.sess().uid_copy(&set, &to).await?;
+                    let can_move = self.caps.contains("MOVE");
+                    transfer_messages(self.sess(), &set, &to, can_move).await?;
+                    if !can_move {
                         let _: Vec<_> = self.sess().uid_store(&set, "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
                         self.expunge(&set, &uids).await?;
                     }
@@ -944,7 +957,10 @@ impl SessionWorker {
                 // 同步目标文件夹，按 Message-ID 对上占位；对不上的（没有 Message-ID）删掉占位，用服务器上的新副本
                 if let Some(fid) = self.folder_id_by_path(&to) {
                     if let Some(f) = self.folder_by_id(fid) {
-                        self.sync_folder(&f, false).await?;
+                        self.skip_rules = true;
+                        let r = self.sync_folder(&f, false).await;
+                        self.skip_rules = false;
+                        r?;
                     }
                 }
                 let st = self.ctx.store.lock().unwrap();
@@ -1048,6 +1064,24 @@ enum Wake {
     Stop,
 }
 
+/// async-imap 0.10 的 UID MOVE 会转义目标路径，UID COPY 则要求调用方传入 IMAP 参数。
+/// 只给 COPY 补引号；MOVE 继续传原始路径，避免双重转义。
+async fn transfer_messages<T>(session: &mut async_imap::Session<T>, set: &str, to: &str, can_move: bool) -> Result<()>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + std::fmt::Debug + Send,
+{
+    if can_move {
+        session.uid_mv(set, to).await?;
+    } else {
+        if to.chars().any(|c| matches!(c, '\r' | '\n' | '\0')) {
+            return Err(anyhow!("Invalid IMAP mailbox name"));
+        }
+        let quoted = format!("\"{}\"", to.replace('\\', "\\\\").replace('"', "\\\""));
+        session.uid_copy(set, quoted).await?;
+    }
+    Ok(())
+}
+
 /// 保存正文：原始邮件写 .eml 文件，文本进数据库和全文索引
 /// UID 列表转成 IMAP 的集合写法：排序去重，连续的并成 a:b，每批最多 400 段（命令长度有限）
 fn uid_sets(uids: &[u32]) -> Vec<String> {
@@ -1113,5 +1147,63 @@ mod uid_set_tests {
         // 连续的 5000 个只要一段
         let dense: Vec<u32> = (1..=5000).collect();
         assert_eq!(uid_sets(&dense), vec!["1:5000"]);
+    }
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn copy_and_move_quote_mailbox_names_once_and_end_with_crlf() {
+        for (path, quoted) in [
+            ("INBOX", "\"INBOX\""),
+            ("Trash", "\"Trash\""),
+            ("Junk E-mail", "\"Junk E-mail\""),
+            (r"Folder\Child", r#""Folder\\Child""#),
+            (r#"Folder "quoted""#, r#""Folder \"quoted\"""#),
+        ] {
+            for can_move in [false, true] {
+                let (client, server) = tokio::io::duplex(4096);
+                let expected = format!("UID {} 7:9 {quoted}\r\n", if can_move { "MOVE" } else { "COPY" });
+                let server = tokio::spawn(async move {
+                    let mut server = BufReader::new(server);
+                    let mut line = String::new();
+                    server.read_line(&mut line).await.unwrap();
+                    let tag = line.split_whitespace().next().unwrap().to_string();
+                    server.get_mut().write_all(format!("{tag} OK logged in\r\n").as_bytes()).await.unwrap();
+                    line.clear();
+                    server.read_line(&mut line).await.unwrap();
+                    let (tag, command) = line.split_once(' ').unwrap();
+                    assert_eq!(command, expected);
+                    server.get_mut().write_all(format!("{tag} OK transferred\r\n").as_bytes()).await.unwrap();
+                });
+                let mut session = async_imap::Client::new(client).login("test", "test").await.map_err(|e| e.0).unwrap();
+                tokio::time::timeout(Duration::from_secs(3), transfer_messages(&mut session, "7:9", path, can_move)).await.unwrap().unwrap();
+                server.await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn copy_rejects_mailbox_command_injection_before_writing() {
+        let (client, server) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut server = BufReader::new(server);
+            let mut line = String::new();
+            server.read_line(&mut line).await.unwrap();
+            let tag = line.split_whitespace().next().unwrap();
+            server.get_mut().write_all(format!("{tag} OK logged in\r\n").as_bytes()).await.unwrap();
+            line.clear();
+            // 客户端丢弃连接前不应发出任何 COPY 命令。
+            assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
+        });
+        let mut session = async_imap::Client::new(client).login("test", "test").await.map_err(|e| e.0).unwrap();
+        for path in ["Junk\r\nNOOP", "Junk\n", "Junk\0"] {
+            assert!(transfer_messages(&mut session, "7", path, false).await.is_err());
+        }
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
     }
 }
