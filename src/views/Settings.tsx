@@ -398,7 +398,7 @@ function Mcp() {
 
   return (
     <>
-      <Head title={L('MCP 服务', 'MCP server')} lead={L('让本机的 AI agent（Claude Code、Codex、Cursor 等）通过标准 MCP 协议读你的邮件。改标记、写草稿和发信要另外逐项开启。', 'Let AI agents on this computer (Claude Code, Codex, Cursor…) read your mail over the standard MCP protocol. Marking, drafting and sending each need to be turned on separately.')} />
+      <Head title={L('MCP 服务', 'MCP server')} lead={L('让本机的 AI agent（Claude Code、Codex、Cursor 等）通过标准 MCP 协议读你的邮件。', 'Let AI agents on this computer (Claude Code, Codex, Cursor…) read your mail over the standard MCP protocol. Marking, drafting and sending each need to be turned on separately.')} />
       <section>
         <h2 className="gh">{L('服务', 'Server')}</h2>
         <div className="group sq">
@@ -463,25 +463,29 @@ function Mcp() {
             <div className="grow"><div className="lbl">{L('允许读取邮件', 'Allow reading mail')}</div><div className="sub">{L('列出账号和文件夹、搜索、读正文、查联系人和待办', 'List accounts and folders, search, read bodies, look up contacts and to-dos')}</div></div>
             <Switch label={L('允许读取邮件', 'Allow reading mail')} on={st.mcpRead} onChange={(v) => s.saveSettings({ mcpRead: v })} />
           </div>
-          {s.accounts.map((a) => (
-            <div className="gr" key={a.id}>
-              <span className="dot" style={{ background: a.color }} />
-              <div className="grow"><div className="lbl">{L(`${a.label || a.email} 允许读取`, `Allow reading ${a.label || a.email}`)}</div>{!a.mcpRead && <div className="sub">{L('已关闭：agent 看不到这个账号，也搜不到它的邮件', 'Off: the agent cannot see this account or find its mail')}</div>}</div>
-              <Switch label={L(`${a.email} 允许读取`, `Allow reading ${a.email}`)} on={a.mcpRead} onChange={async (v) => { await api.updateAccount(a.id, { mcpRead: v }); s.refreshMeta() }} />
-            </div>
-          ))}
-          <div className="gr" style={{ minHeight: 52 }}>
-            <div className="grow"><div className="lbl">{L('允许调用会消耗 AI 额度的工具', 'Allow tools that spend AI quota')}</div><div className="sub">{L('开启后多一个「问邮箱」工具，每次调用都会走你配置的模型并计入每日上限。今日简报是本地算的，不花额度', 'Adds an "ask my mailbox" tool that calls your model and counts against the daily limit. The daily digest is computed locally and costs nothing')}</div></div>
-            <Switch label={L('允许调用会消耗 AI 额度的工具', 'Allow tools that spend AI quota')} on={st.mcpAllowAi} onChange={(v) => s.saveSettings({ mcpAllowAi: v })} />
-          </div>
-          <div className="gr" style={{ minHeight: 52 }}>
-            <div><label className="lbl" htmlFor="mcp-chars">{L('单次返回正文上限', 'Body characters per call')}</label><div className="sub">{L('超出部分让 agent 分段续读，免得一次撑爆它的上下文', 'The agent reads the rest in follow-up calls, so one email cannot blow up its context')}</div></div>
-            <input id="mcp-chars" type="number" className="field inset num" style={{ width: 100, textAlign: 'right' }} min={200} max={50000} step={1000} value={st.mcpBodyMaxChars} onChange={(e) => s.saveSettings({ mcpBodyMaxChars: Number(e.target.value) || 0 })} />
-          </div>
-          <div className="gr" style={{ minHeight: 52 }}>
-            <Icon name="lock" style={{ color: 'var(--sec)' }} />
-            <div className="grow"><div className="lbl">{L('存附件会写到「下载」文件夹', 'Saving an attachment writes to your Downloads folder')}</div><div className="sub">{L('这是读权限唯一会动到磁盘的工具：只新建文件，重名自动加序号，绝不覆盖，也不弹资源管理器', 'The only read tool that touches disk: it creates new files, adds a number on name clashes, never overwrites and never opens Explorer')}</div></div>
-          </div>
+          {st.mcpRead && (
+            <>
+              {s.accounts.map((a) => (
+                <div className="gr" key={a.id}>
+                  <span className="dot" style={{ background: a.color }} />
+                  <div className="grow"><div className="lbl">{L(`${a.label || a.email} 允许读取`, `Allow reading ${a.label || a.email}`)}</div>{!a.mcpRead && <div className="sub">{L('已关闭：agent 看不到这个账号，也搜不到它的邮件', 'Off: the agent cannot see this account or find its mail')}</div>}</div>
+                  <Switch label={L(`${a.email} 允许读取`, `Allow reading ${a.email}`)} on={a.mcpRead} onChange={async (v) => { await api.updateAccount(a.id, { mcpRead: v }); s.refreshMeta() }} />
+                </div>
+              ))}
+              <div className="gr" style={{ minHeight: 52 }}>
+                <div className="grow"><div className="lbl">{L('允许调用会消耗 AI 额度的工具', 'Allow tools that spend AI quota')}</div><div className="sub">{L('开启后多一个「问邮箱」工具，每次调用都会走你配置的模型并计入每日上限。今日简报是本地算的，不花额度', 'Adds an "ask my mailbox" tool that calls your model and counts against the daily limit. The daily digest is computed locally and costs nothing')}</div></div>
+                <Switch label={L('允许调用会消耗 AI 额度的工具', 'Allow tools that spend AI quota')} on={st.mcpAllowAi} onChange={(v) => s.saveSettings({ mcpAllowAi: v })} />
+              </div>
+              <div className="gr" style={{ minHeight: 52 }}>
+                <div><label className="lbl" htmlFor="mcp-chars">{L('单次返回正文上限', 'Body characters per call')}</label><div className="sub">{L('超出部分让 agent 分段续读，免得一次撑爆它的上下文', 'The agent reads the rest in follow-up calls, so one email cannot blow up its context')}</div></div>
+                <input id="mcp-chars" type="number" className="field inset num" style={{ width: 100, textAlign: 'right' }} min={200} max={50000} step={1000} value={st.mcpBodyMaxChars} onChange={(e) => s.saveSettings({ mcpBodyMaxChars: Number(e.target.value) || 0 })} />
+              </div>
+              <div className="gr" style={{ minHeight: 52 }}>
+                <Icon name="lock" style={{ color: 'var(--sec)' }} />
+                <div className="grow"><div className="lbl">{L('存附件会写到「下载」文件夹', 'Saving an attachment writes to your Downloads folder')}</div><div className="sub">{L('这是读权限唯一会动到磁盘的工具：只新建文件，重名自动加序号，绝不覆盖，也不弹资源管理器', 'The only read tool that touches disk: it creates new files, adds a number on name clashes, never overwrites and never opens Explorer')}</div></div>
+              </div>
+            </>
+          )}
         </div>
       </section>
       <section>
@@ -501,7 +505,7 @@ function Mcp() {
           {st.mcpWrite && (
             <div className="gr" style={{ minHeight: 52 }}>
               <Icon name="lock" style={{ color: 'var(--sec)' }} />
-              <div className="grow"><div className="lbl">{L('永久删除每次都要你确认', 'Permanent deletion always asks you first')}</div><div className="sub">{L('不管开关怎么设，删除前一定弹桌面确认框，列出账号和主题。一批邮件里只要有一封不属于已授权的账号，整批都不动', 'Whatever the switches say, a desktop dialog lists the accounts and subjects before anything is deleted. If one message in a batch belongs to an account you have not authorized, the whole batch is left alone')}</div></div>
+              <div className="grow"><div className="lbl">{L('永久删除每次都要你确认', 'Permanent deletion always asks you first')}</div></div>
               <span className="tag">{L('始终开启', 'Always on')}</span>
             </div>
           )}
@@ -530,7 +534,7 @@ function Mcp() {
                 <Icon name="lock" style={{ color: 'var(--sec)' }} />
                 {st.mcpSendMode === 'confirm' ? (
                   <>
-                    <div className="grow"><div className="lbl">{L('每封信发出前都要你点允许', 'Every send needs your approval')}</div><div className="sub">{L('确认框里完整列出发件账号、全部收件人、主题、附件和正文开头。点拒绝、关掉窗口、或 120 秒没响应，都算拒绝，一封也发不出去。没有无人值守直发这一档', 'The dialog lists the sending account, every recipient, the subject, attachments and the start of the body. Denying, closing the window or leaving it for 120 seconds all count as refusal and nothing is sent. There is no unattended-send option')}</div></div>
+                    <div className="grow"><div className="lbl">{L('每封信发出前都要你点允许', 'Every send needs your approval')}</div></div>
                     <span className="tag">{L('始终开启', 'Always on')}</span>
                   </>
                 ) : (
