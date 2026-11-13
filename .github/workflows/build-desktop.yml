@@ -100,8 +100,8 @@ jobs:
           app="src-tauri/target/$TARGET/release/bundle/macos/Kojoo Mail.app"
           arch=arm64
           if [[ "$TARGET" == x86_64-* ]]; then arch=x86_64; fi
-          lipo -verify_arch "$arch" "$app/Contents/MacOS/kojoomail"
-          lipo -verify_arch "$arch" "$app/Contents/MacOS/kojoomail-mcp"
+          lipo "$app/Contents/MacOS/kojoomail" -verify_arch "$arch"
+          lipo "$app/Contents/MacOS/kojoomail-mcp" -verify_arch "$arch"
           codesign --verify --deep --strict "$app"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

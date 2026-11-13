@@ -16,7 +16,7 @@ git push -u fork codex/my-feature
 gh pr create --repo iamsxm/kojoomail --base main
 ```
 
-建议 `main` 的保护配置：要求 PR、要求 `required` 检查通过、禁止强推和删除；个人仓库允许零个必需审批，避免自己无法审批自己。不要启用 require linear history，因为同步上游需要 merge commit。保留仓库的 merge 和 squash 按钮。
+`main` 已启用保护：要求 PR、要求分支保持最新且 `required` 检查通过、要求解决全部讨论、禁止强推和删除，并对管理员生效。个人仓库允许零个必需审批，避免自己无法审批自己。未启用 require linear history，因为同步上游需要 merge commit；仓库保留 merge 和 squash 按钮，关闭 rebase，合并后自动删除分支。可复用配置保存在 `.github/main-protection.json`。
 
 首次集成 PR 同时包含原 MCP 功能分支、本地后续修复、官方 0.3.2 合并和本次流水线，必须采用 merge commit。官方合并记录见 `upstream-0.3.2-merge-plan.zh-CN.md`。
 
