@@ -2,6 +2,8 @@
 
 谢谢你愿意帮忙。
 
+本 fork 的分支、CI、上游同步和自动发布约定见 [GitHub 工作流程](docs/github-workflow.zh-CN.md)。上游同步 PR 必须保留 merge commit；功能 PR 可以 squash。发布版本统一使用 `npm run release:version -- <版本>` 修改，PR 检查通过后再推送对应 `v` 标签。
+
 ## 提问题
 
 - Bug：写清系统版本、Kojoo Mail 版本（设置 → 关于）、邮箱服务商、怎么复现。可以附上 设置 → 关于 →「导出诊断信息」生成的文件（邮箱地址已打码，不含密码和邮件内容），贴出来之前自己再看一眼

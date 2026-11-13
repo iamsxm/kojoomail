@@ -3,60 +3,105 @@ name: ci
 on:
   pull_request:
   push:
-    branches:
-      - 'ci/**'
+    branches: [main, 'ci/**', 'codex/**', 'feat/**', 'fix/**', 'sync/**']
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  frontend:
-    runs-on: ubuntu-latest
+  workflow-lint:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Check workflow syntax with verified actionlint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          gh release download v1.7.12 --repo rhysd/actionlint --pattern actionlint_1.7.12_linux_amd64.tar.gz --dir "$RUNNER_TEMP/actionlint"
+          cd "$RUNNER_TEMP/actionlint"
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint_1.7.12_linux_amd64.tar.gz' | sha256sum -c -
+          tar -xzf actionlint_1.7.12_linux_amd64.tar.gz
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/actionlint/actionlint" -color
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: node node_modules/typescript/bin/tsc --noEmit
+      - run: npm run release:check
       - run: npm test
+      - run: npm run build
 
-  # 代理不依赖 tauri，可以在 Linux 上编译，一分钟拿到反馈
-  proxy-check:
-    runs-on: ubuntu-latest
+  rust:
+    name: rust (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          workspaces: src-tauri -> target
-          key: proxy
-      - run: cargo check -p kojoomail-mcp --all-targets
-        working-directory: src-tauri
-
-  rust-check:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
-      # generate_context! 会把 ../dist 嵌进二进制，cargo check 也要先有前端产物
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          workspaces: src-tauri -> target
+          key: ci-${{ matrix.target }}
+          cache-on-failure: true
+          save-if: ${{ github.event_name != 'pull_request' }}
       - run: npm ci
       - run: npm run build
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-          key: app
-      # externalBin 要求文件先在位，tauri-build 在 cargo check 阶段就会校验
-      - run: cargo build --release -p kojoomail-mcp
-        working-directory: src-tauri
+      - name: Build MCP bridge
+        run: cargo build --locked --manifest-path src-tauri/Cargo.toml -p kojoomail-mcp --target ${{ matrix.target }}
       - name: Stage MCP bridge
-        shell: bash
-        run: |
-          mkdir -p src-tauri/binaries
-          cp src-tauri/target/release/kojoomail-mcp.exe src-tauri/binaries/kojoomail-mcp-x86_64-pc-windows-msvc.exe
-      - run: cargo check --workspace --all-targets
-        working-directory: src-tauri
-      - run: cargo test --lib
-        working-directory: src-tauri
+        run: node scripts/desktop.mjs stage ${{ matrix.target }} debug
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --workspace --target ${{ matrix.target }}
+
+  required:
+    if: ${{ always() }}
+    needs: [frontend, rust, workflow-lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every platform
+        env:
+          FRONTEND: ${{ needs.frontend.result }}
+          RUST: ${{ needs.rust.result }}
+          LINT: ${{ needs.workflow-lint.result }}
+        run: test "$FRONTEND" = success && test "$RUST" = success && test "$LINT" = success

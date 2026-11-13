@@ -2,12 +2,15 @@
   "name": "kojoomail",
   "private": true,
   "license": "AGPL-3.0-or-later",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js",
     "build": "node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build",
-    "test": "node --experimental-strip-types --test tests/mail-preview.test.mjs tests/mcp-config.test.mjs",
+    "test": "node --experimental-strip-types --test tests/mail-preview.test.mjs tests/mcp-config.test.mjs tests/release.test.mjs",
+    "release:check": "node scripts/release.mjs check",
+    "release:version": "node scripts/release.mjs version",
+    "upstream:report": "node scripts/upstream-report.mjs",
     "tauri": "node node_modules/@tauri-apps/cli/tauri.js"
   },
   "dependencies": {

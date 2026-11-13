@@ -1,5 +1,5 @@
 //! 自动更新（tauri-plugin-updater）：启动 30 秒后查一次，之后每天一次。
-//! 有新版只发 update-available 事件，用户点了才下载安装。更新包用 .local/updater.key 签名，公钥在 tauri.conf.json，
+//! 有新版只发 update-available 事件，用户点了才下载安装。fork 更新包由 Actions Secret 中的私钥签名，公钥在 tauri.conf.json，
 //! 检查更新的地址和公钥在 tauri.conf.json 的 plugins.updater
 
 use serde::Serialize;

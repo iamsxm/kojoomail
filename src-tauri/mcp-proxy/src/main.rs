@@ -83,30 +83,51 @@ fn locate_exe() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let name = if cfg!(windows) { "Kojoo Mail.exe" } else { "Kojoo Mail" };
     let self_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     // 安装目录里代理和主程序同级；开发时代理在 target/release，主程序在上一级
     for dir in [self_dir.clone(), self_dir.parent()?.to_path_buf()] {
-        let p = dir.join(name);
-        if p.is_file() {
+        if let Some(p) = main_in(&dir) {
             return Some(p);
         }
     }
     #[cfg(windows)]
     if let Some(local) = dirs::data_local_dir() {
-        let p = local.join("Programs").join("Kojoo Mail").join(name);
-        if p.is_file() {
+        if let Some(p) = main_in(&local.join("Programs").join("Kojoo Mail")) {
             return Some(p);
         }
     }
     #[cfg(target_os = "macos")]
     {
-        let p = PathBuf::from("/Applications/Kojoo Mail.app/Contents/MacOS/Kojoo Mail");
-        if p.is_file() {
+        if let Some(p) = main_in(std::path::Path::new("/Applications/Kojoo Mail.app/Contents/MacOS")) {
             return Some(p);
         }
     }
     None
+}
+
+// Tauri 默认沿用 Cargo binary 名称；历史自定义打包可能使用 productName。
+fn main_in(dir: &std::path::Path) -> Option<PathBuf> {
+    let names = if cfg!(windows) { ["kojoomail.exe", "Kojoo Mail.exe"] } else { ["kojoomail", "Kojoo Mail"] };
+    names.iter().map(|name| dir.join(name)).find(|path| path.is_file())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn finds_cargo_binary_and_keeps_legacy_product_name_fallback() {
+        let dir = std::env::temp_dir().join(format!("kjm-bridge-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cargo = dir.join(if cfg!(windows) { "kojoomail.exe" } else { "kojoomail" });
+        let legacy = dir.join(if cfg!(windows) { "Kojoo Mail.exe" } else { "Kojoo Mail" });
+        assert_eq!(main_in(&dir), None);
+        std::fs::write(&legacy, b"legacy").unwrap();
+        assert_eq!(main_in(&dir), Some(legacy.clone()));
+        std::fs::write(&cargo, b"cargo").unwrap();
+        assert_eq!(main_in(&dir), Some(cargo));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 /// 拉起桌面端（缩到托盘），等它写出发现文件。开启 MCP 与否由用户在界面里决定。

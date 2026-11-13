@@ -1,0 +1,10 @@
+{
+  "repository": "ekoouu/kojoomail",
+  "branch": "main",
+  "integratedCommit": "fef87ac07dd3cce9e43102f475456c316744bffd",
+  "integratedReleaseCommit": "935b1d8d07747433f401c7fbd4e875a9f2f0041a",
+  "integrationMergeCommit": "0225bd97dfe80cefd398e4569d3570524e347e51",
+  "upstreamVersion": "0.3.2",
+  "forkDatabaseVersion": 5,
+  "excluded": "upstream standalone MCP implementation; retain fork HTTP MCP, stdio bridge and permission model"
+}

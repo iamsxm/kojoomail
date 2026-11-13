@@ -7,6 +7,7 @@ src-tauri/binaries/
 tests/e2e/node_modules/
 *.log
 .local/
+release-assets/
 *.tsbuildinfo
 docs/images/screens/
 docs/images/screens-en/

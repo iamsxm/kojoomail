@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Kojoo Mail",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "identifier": "co.kojoo.mail",
   "build": {
     "beforeDevCommand": "",
@@ -53,9 +53,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwM0Y5N0FDMzYwMUY1NzQKUldSMDlRRTJySmMvRUM4cDdiRWc3OXRXM0RWT2JwOXBGUUZhNEgwWnFxTlNqaGN1TWsxeVBpOXYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlFNEVDRDU4OTk3NkREMDcKUldRSDNYYVpXTTFPbm1yVUhGNFdoa3dDOC93NENQNnhMaTl1SCtrcnhmamhPQnRkREM5bHJta1gK",
       "endpoints": [
-        "https://mail.songxxai.com/kojoomail/update/latest.json"
+        "https://github.com/iamsxm/kojoomail/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

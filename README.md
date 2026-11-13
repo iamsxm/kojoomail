@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ekoouu/kojoomail/releases/latest"><b>下载</b></a> ·
+  <a href="https://github.com/iamsxm/kojoomail/releases/latest"><b>下载 fork 版本</b></a> ·
   <a href="#能做什么">功能</a> ·
   <a href="#隐私">隐私</a> ·
   <a href="#从源码编译">从源码编译</a>
@@ -22,6 +22,8 @@
 </p>
 
 ---
+
+本分支为保留独立 MCP 实现的 fork，已合入官方 0.3.2 非 MCP 更新。开发、同步上游、版本标签发布与签名配置见 [GitHub 工作流程](docs/github-workflow.zh-CN.md)。fork 从 0.4.0 起使用独立版本、更新源和公钥；首次使用请手动安装本 fork 的发布包。
 
 每天在 QQ 邮箱、公司邮箱、Gmail、Outlook 之间来回切，重要的询盘被通知和广告淹掉，回一封英文邮件要先翻译再斟酌——**Kojoo Mail 把这些合到一个窗口里**：所有账号的邮件按时间排在一起，AI 先帮你读一遍，告诉你哪封要紧、要做什么、可以怎么回。
 
@@ -132,7 +134,7 @@ Windows 任务管理器里的内存（作者日常使用，Windows 11，2026 年
 
 ## 下载
 
-到 **[Releases](https://github.com/ekoouu/kojoomail/releases/latest)** 下载最新版：
+到本 fork 的 **[Releases](https://github.com/iamsxm/kojoomail/releases/latest)** 下载已发布版本：
 
 | 系统 | 文件 |
 |---|---|
@@ -156,7 +158,7 @@ bash scripts/build-mac.sh          # macOS（在 Mac 上跑）
 ```
 
 - Gmail / Outlook 一键登录需要你自己申请客户端 ID，见 [docs/oauth-setup.md](docs/oauth-setup.md)；不申请也能编译，Gmail 用应用专用密码登录
-- **自己改代码再分发的话**：把 `src-tauri/tauri.conf.json` 里 `plugins.updater` 的 `pubkey` 和 `endpoints` 换成你自己的（`tauri signer generate` 生成密钥），或者删掉这一段，否则你的版本会提示用户更新到官方版
+- 本 fork 已配置独立更新源、公钥及 Actions 签名 Secret。维护者请恢复原私钥备份，不要重新生成；若再次 fork 后独立发行，应配置自己的更新源和密钥，见 [GitHub 工作流程](docs/github-workflow.zh-CN.md)。
 - README 里的截图用演示数据生成：`scripts/screenshots/`
 
 | 目录 | 内容 |

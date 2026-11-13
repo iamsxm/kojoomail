@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ekoouu/kojoomail/releases/latest"><b>Download</b></a> ·
+  <a href="https://github.com/iamsxm/kojoomail/releases/latest"><b>Download fork builds</b></a> ·
   <a href="#features">Features</a> ·
   <a href="#privacy">Privacy</a> ·
   <a href="#build-from-source">Build from source</a>
@@ -22,6 +22,8 @@
 </p>
 
 ---
+
+This fork preserves its own MCP server and includes the upstream 0.3.2 features outside MCP. Starting with 0.4.0, it uses independent versions, an update endpoint and signing keys. Install a fork release manually the first time. See the [GitHub workflow guide](docs/github-workflow.zh-CN.md) for development, upstream merges and tag-triggered releases.
 
 You switch between a personal inbox, a work account, Gmail and Outlook all day. Important inquiries get buried under notifications and newsletters, and every reply in another language means translating first and polishing after. **Kojoo Mail puts all of that in one window**: mail from every account in one timeline, and an AI that reads each message first and tells you which ones matter, what needs doing, and how you might reply.
 
@@ -128,7 +130,7 @@ Enable Settings → MCP server and copy its configuration into your agent. The f
 
 ## Download
 
-Get the latest version from **[Releases](https://github.com/ekoouu/kojoomail/releases/latest)**:
+Get published fork builds from **[Releases](https://github.com/iamsxm/kojoomail/releases/latest)**:
 
 | System | File |
 |---|---|
@@ -152,7 +154,7 @@ bash scripts/build-mac.sh          # macOS (run on a Mac)
 ```
 
 - One-click sign-in for Gmail and Outlook needs your own OAuth client IDs; see [docs/oauth-setup.md](docs/oauth-setup.md). It builds without them, and Gmail then signs in with an app password.
-- **If you redistribute a modified build**: replace `pubkey` and `endpoints` under `plugins.updater` in `src-tauri/tauri.conf.json` with your own (generate a key with `tauri signer generate`), or remove that section. Otherwise your build will prompt users to update to the official version.
+- This fork has its own updater endpoint and signing key. Maintainers must restore the existing private-key backup. Further forks that publish independent releases must configure their own endpoint and key; see the [workflow guide](docs/github-workflow.zh-CN.md).
 - The README screenshots are generated from demo data: `scripts/screenshots/`
 
 | Directory | Contents |
