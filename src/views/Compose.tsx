@@ -55,6 +55,7 @@ export default function Compose() {
   const [showCc, setShowCc] = useState(initial.cc.length > 0 || initial.bcc.length > 0)
   const [subject, setSubject] = useState(initial.subject)
   const [body, setBody] = useState(initial.body)
+  const [showSignature, setShowSignature] = useState(false)
   const [showQuote, setShowQuote] = useState(false)
   const [mode, setMode] = useState<'edit' | 'preview'>('edit')
   const [files, setFiles] = useState<string[]>(initial.files)
@@ -254,8 +255,12 @@ export default function Compose() {
               <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('正文', 'Message body')} spellCheck={false} />
               {sig && (
                 <div className="c-sig">
-                  <span className="k">{L('签名（发送时自动加在末尾）', 'Signature (added when sent)')}</span>
-                  <MdView className="sig-preview" md={sig} />
+                  <button type="button" className="btn sm sq" style={{ justifySelf: 'start', background: 'var(--well)', boxShadow: 'none', color: 'var(--sec)' }} aria-expanded={showSignature} aria-controls="c-signature" onClick={() => setShowSignature((shown) => !shown)}>
+                    {showSignature ? L('收起签名（发送时自动添加）', 'Hide signature (added when sent)') : L('··· 显示签名（发送时自动添加）', '··· Show signature (added when sent)')}
+                  </button>
+                  <div id="c-signature" hidden={!showSignature}>
+                    {showSignature && <MdView className="sig-preview" md={sig} />}
+                  </div>
                 </div>
               )}
             </>
