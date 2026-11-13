@@ -1,11 +1,12 @@
 import { copyFileSync, chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { ROOT, TARGETS, run } from './release.mjs'
+import { ROOT, TARGETS, run, appleBuildEnv } from './release.mjs'
 
 const [command, target, profile = 'release', mode = 'preview'] = process.argv.slice(2)
 if (!TARGETS[target] || !['debug', 'release'].includes(profile)) throw new Error('需要受支持的 target 和 debug/release profile')
 const windows = target.includes('windows')
 const filename = `kojoomail-mcp${windows ? '.exe' : ''}`
+const env = appleBuildEnv(process.env)
 if (command === 'stage') {
   const dir = join(ROOT, 'src-tauri/binaries')
   mkdirSync(dir, { recursive: true })
@@ -23,5 +24,5 @@ if (command === 'stage') {
   const path = join(ROOT, '.local/ci-bundle.json')
   writeFileSync(path, JSON.stringify(config))
   run(process.execPath, ['node_modules/@tauri-apps/cli/tauri.js', 'build', '--ci', '--target', target,
-    '--bundles', TARGETS[target].bundles, '--config', path, '--', '--locked'], { stdio: 'inherit' })
+    '--bundles', TARGETS[target].bundles, '--config', path, '--', '--locked'], { env, stdio: 'inherit' })
 } else throw new Error('用法：desktop.mjs stage|bundle target debug|release [signed|preview]')

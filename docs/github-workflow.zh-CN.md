@@ -81,7 +81,7 @@ https://github.com/iamsxm/kojoomail/releases/latest/download/latest.json
 | `APPLE_ID`、`APPLE_PASSWORD` | Secret | Apple 公证可选；后者使用应用专用密码 |
 | `APPLE_TEAM_ID` | Variable | Apple 公证配套团队 ID |
 
-updater 签名与 Apple/Windows 系统代码签名是不同层。本次配置 updater 签名；没有 Apple Developer 证书/公证时，macOS 首次打开可能需要到「系统设置 → 隐私与安全性」允许，更新后钥匙串也可能重新询问。Windows 没有 Authenticode 证书时会显示未知发布者。缺少 OAuth 配置时 Gmail 使用应用专用密码，Outlook 一键登录不启用；不能把缺省安装包描述成已具备 OAuth。
+updater 签名与 Apple/Windows 系统代码签名是不同层。本次配置 updater 签名；没有 Apple Developer 证书/公证时，macOS 使用 ad-hoc 签名，首次打开可能需要到「系统设置 → 隐私与安全性」允许，更新后钥匙串也可能重新询问。空的 Apple Secret 会在打包前删除，不会被 Tauri 当作待导入的 p12。Windows 没有 Authenticode 证书时会显示未知发布者。缺少 OAuth 配置时 Gmail 使用应用专用密码，Outlook 一键登录不启用；不能把缺省安装包描述成已具备 OAuth。
 
 首次安装 fork 需要手动安装本 fork 的安装包，官方旧包只信任官方公钥，不能通过官方自动更新通道迁移过来。此后的 fork 自动更新才使用本次公钥和地址。
 

@@ -20,6 +20,14 @@ const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest(
 export function run(command, args, options = {}) {
   return (execFileSync(command, args, { cwd: ROOT, encoding: 'utf8', ...options }) ?? '').trim()
 }
+export function appleBuildEnv(source) {
+  const env = { ...source }
+  // 空 Secret 不等于未配置：Tauri 看到变量存在就会尝试导入证书。
+  for (const name of ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID', 'APPLE_SIGNING_IDENTITY']) {
+    if (!env[name]) delete env[name]
+  }
+  return env
+}
 export function parseVersion(version) {
   // 限定发布格式，避免 NSIS 版本资源、标签和 SemVer 的解释分歧。
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?$/.exec(version)

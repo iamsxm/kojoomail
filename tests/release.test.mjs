@@ -4,7 +4,7 @@ import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto'
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ROOT, TARGETS, ENDPOINT, parseVersion, checkVersions, setVersion, verifySignature, assetNames, collect, makeManifest } from '../scripts/release.mjs'
+import { ROOT, TARGETS, ENDPOINT, parseVersion, checkVersions, setVersion, verifySignature, assetNames, collect, makeManifest, appleBuildEnv } from '../scripts/release.mjs'
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'kojoomail-release-'))
@@ -131,4 +131,12 @@ test('macOS preview collection only needs dmg, while a release requires the sign
   assert.equal(record.signed, false)
   assert.deepEqual(Object.keys(record.files), assetNames(version, target, false).files)
   assert.throws(() => collect(target, true, root, 'a'.repeat(40)))
+})
+
+test('empty Apple signing environment is removed before Tauri starts', () => {
+  const source = { APPLE_CERTIFICATE: '', APPLE_CERTIFICATE_PASSWORD: '', APPLE_ID: '', PATH: '/bin', TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '' }
+  assert.deepEqual(appleBuildEnv(source), { PATH: '/bin', TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '' })
+  assert.equal(source.APPLE_CERTIFICATE, '', '不改变调用方环境')
+  const configured = { APPLE_CERTIFICATE: 'p12-data', APPLE_CERTIFICATE_PASSWORD: 'password', APPLE_SIGNING_IDENTITY: '-', APPLE_ID: 'developer@example.com' }
+  assert.deepEqual(appleBuildEnv(configured), configured)
 })
