@@ -23,7 +23,7 @@
 
 ---
 
-This fork preserves its own MCP server and includes the upstream 0.3.2 features outside MCP. Starting with 0.4.0, it uses independent versions, an update endpoint and signing keys. Install a fork release manually the first time. See the [GitHub workflow guide](docs/github-workflow.zh-CN.md) for development, upstream merges and tag-triggered releases.
+This fork preserves its own MCP server and includes the upstream 0.3.2 features outside MCP. Starting with 0.3.2, it uses independent versions, an update endpoint and signing keys. Install a fork release manually the first time. See the [GitHub workflow guide](docs/github-workflow.zh-CN.md) for development, upstream merges and tag-triggered releases.
 
 You switch between a personal inbox, a work account, Gmail and Outlook all day. Important inquiries get buried under notifications and newsletters, and every reply in another language means translating first and polishing after. **Kojoo Mail puts all of that in one window**: mail from every account in one timeline, and an AI that reads each message first and tells you which ones matter, what needs doing, and how you might reply.
 

@@ -1,6 +1,6 @@
 # fork 的 GitHub 开发、上游同步与发布流程
 
-适用仓库：`iamsxm/kojoomail`。官方来源：`ekoouu/kojoomail`。首次独立发布版本准备为 `0.4.0`，没有自动创建该标签或公开 Release。
+适用仓库：`iamsxm/kojoomail`。官方来源：`ekoouu/kojoomail`。首次独立发布版本为 `0.3.2`，公开版本以 fork 的 Releases 页面为准。
 
 ## 1. 分支和 PR
 
@@ -52,7 +52,7 @@ fork 使用自己的版本序列，不随官方版本号回退。例如 fork 为
 统一改版本：
 
 ```powershell
-npm run release:version -- 0.4.1
+npm run release:version -- 0.3.3
 npm run release:check
 npm test
 ```
@@ -91,13 +91,13 @@ updater 签名与 Apple/Windows 系统代码签名是不同层。本次配置 up
 
 ```powershell
 git fetch fork
-git switch -c codex/release-0.4.0 fork/main
-npm run release:check -- v0.4.0
-git tag -a v0.4.0 -m 'Kojoo Mail fork v0.4.0'
-git push fork v0.4.0
+git switch -c codex/release-0.3.2 fork/main
+npm run release:check -- v0.3.2
+git tag -a v0.3.2 -m 'Kojoo Mail fork v0.3.2'
+git push fork v0.3.2
 ```
 
-`v0.4.0` 已在本次源码中准备好，等集成 PR 合入 main 后执行上述步骤；新版本先用 `release:version` 改版本并通过 PR。本地创建的发布分支只是指向最新 main，不需要额外空提交。
+以上以首次 `v0.3.2` 为例；已经发布的标签不要重复创建。新版本先用 `release:version` 改版本并通过 PR，再替换示例中的版本号。本地创建的发布分支只是指向最新 main，不需要额外空提交。
 
 正式发布具体约束：
 
