@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{html, Alignment, Event, LinkType, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -159,7 +159,41 @@ pub fn sanitize(input: &str) -> String {
 
 pub fn markdown(input: &str) -> String {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let mut columns = Vec::new();
+    let mut column = 0;
+    let mut header = false;
     let parser = Parser::new_ext(input, options).map(|event| match event {
+        // 邮件客户端没有应用的 CSS。仅给 Markdown 生成的表格加内联样式，
+        // 不改变用户 HTML 签名、布局表格或原邮件引用的边框。
+        Event::Start(Tag::Table(alignments)) => {
+            columns = alignments;
+            Event::Html("<table border=\"1\" cellpadding=\"8\" cellspacing=\"0\" style=\"border-collapse:collapse;border:1px solid #b8c2cc;width:100%\">".into())
+        }
+        Event::Start(Tag::TableHead) => {
+            header = true;
+            column = 0;
+            Event::Html("<thead><tr>".into())
+        }
+        Event::End(TagEnd::TableHead) => {
+            header = false;
+            Event::Html("</tr></thead>".into())
+        }
+        Event::Start(Tag::TableRow) => {
+            column = 0;
+            Event::Start(Tag::TableRow)
+        }
+        Event::Start(Tag::TableCell) => {
+            let align = match columns.get(column) {
+                Some(Alignment::Center) => "center",
+                Some(Alignment::Right) => "right",
+                _ => "left",
+            };
+            column += 1;
+            let tag = if header { "th" } else { "td" };
+            let background = if header { ";background-color:#f2f4f7;color:#1f2a37" } else { "" };
+            Event::Html(format!("<{tag} style=\"border:1px solid #b8c2cc;padding:8px 10px;vertical-align:top;text-align:{align}{background}\">").into())
+        }
+        Event::End(TagEnd::TableCell) => Event::Html(if header { "</th>" } else { "</td>" }.into()),
         Event::SoftBreak => Event::HardBreak,
         Event::TaskListMarker(checked) => Event::Text(if checked { "☑ " } else { "☐ " }.into()),
         other => other,
@@ -354,10 +388,50 @@ mod tests {
     #[test]
     fn gfm_tables_and_tasks_remain_readable_without_form_controls() {
         let html = markdown("| A | B |\n|---|---|\n| 一 | 二 |\n\n- [x] 完成\n- [ ] 待办");
-        for expected in ["<table>", "<th>A</th>", "<td>一</td>", "☑ ", "☐ "] {
+        for expected in ["<table border=\"1\"", "border-collapse:collapse", "border:1px solid #b8c2cc", ">A</th>", ">一</td>", "☑ ", "☐ "] {
             assert!(html.contains(expected), "{html}");
         }
         assert!(!html.contains("<input"), "{html}");
+    }
+
+    #[test]
+    fn sent_markdown_tables_have_inline_borders_and_keep_alignment() {
+        let out = render(&MailContent { body: "您好！\n\n| 项目 | 本周（11-09 \\~ 11-13） | 下周 | 里程碑 | 风险 |\n|:---|:---:|---:|---|---|\n| 平台 | ① 完成 **优化**；② 验证 | 跟进 | 已上线 | 无 |\n\n以上，请审阅。".into(), ..Default::default() });
+        assert_eq!(out.html.matches("border:1px solid #b8c2cc").count(), 11);
+        for expected in ["text-align:left", "text-align:center", "text-align:right", "<strong>优化</strong>", "11-09 ~ 11-13", "以上，请审阅。"] {
+            assert!(out.html.contains(expected), "{out:?}");
+        }
+        assert!(out.html.contains(&out.preview));
+        assert!(out.text.contains("优化") && out.text.contains("平台"));
+        let legacy = markdown("<table border=\"0\"><tr><td>签名布局</td></tr></table>");
+        assert!(!legacy.contains("#b8c2cc"));
+    }
+
+    #[test]
+    fn rich_table_layout_survives_send_sanitization() {
+        let out = render(&MailContent {
+            body: "<table data-kojoomail-table=\"1\" border=\"1\" cellspacing=\"0\" style=\"border-collapse:collapse;border:1px solid #b8c2cc\"><colgroup><col style=\"width:220px\"><col style=\"min-width:40px\"></colgroup><tbody><tr><th colspan=\"2\" style=\"border:1px solid #b8c2cc;padding:8px 10px\"><p>标题</p></th></tr><tr><td rowspan=\"2\" style=\"border:1px solid #b8c2cc\"><p>第一段</p><p>第二段</p></td><td>正文</td></tr><tr><td>末行</td></tr></tbody></table>".into(),
+            ..Default::default()
+        });
+        for expected in ["border-collapse:collapse", "width:220px", "min-width:40px", "colspan=\"2\"", "rowspan=\"2\"", "<p>第一段</p><p>第二段</p>"] {
+            assert!(out.html.contains(expected), "{out:?}");
+        }
+        assert!(!out.html.contains("data-kojoomail-table"));
+        assert!(out.text.contains("第一段") && out.text.contains("末行"));
+    }
+
+    #[test]
+    fn visual_fonts_and_colors_survive_send_without_editor_metadata() {
+        let out = render(&MailContent {
+            body: "正常正文\n\n<span data-kojoomail-style=\"1\" style=\"font-family: Microsoft YaHei, PingFang SC, sans-serif; font-size: 24px; color: rgb(37, 99, 235); background-color: rgb(254, 240, 138);\">**重点** [链接](https://example.com)</span>\n\n| 项目 | 状态 |\n|---|---|\n| 平台 | <span data-kojoomail-style=\"1\" style=\"color: rgb(220, 38, 38);\">待处理</span> |".into(),
+            ..Default::default()
+        });
+        for expected in ["font-family:Microsoft YaHei", "PingFang SC", "sans-serif", "font-size:24px", "color:rgb(37, 99, 235)", "background-color:rgb(254, 240, 138)", "<strong>重点</strong>", "href=\"https://example.com\"", "border:1px solid #b8c2cc", "待处理"] {
+            assert!(out.html.contains(expected), "{expected}: {out:?}");
+        }
+        assert!(!out.html.contains("data-kojoomail-style"));
+        assert!(out.html.contains(&out.preview));
+        assert!(out.text.contains("正常正文") && out.text.contains("重点") && out.text.contains("待处理"));
     }
 
     #[test]

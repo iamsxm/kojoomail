@@ -1,6 +1,6 @@
 [package]
 name = "kojoomail-mcp"
-version = "0.3.2"
+version = "0.3.3"
 description = "Kojoo Mail MCP stdio bridge"
 license = "AGPL-3.0-or-later"
 edition = "2021"
