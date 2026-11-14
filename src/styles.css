@@ -480,6 +480,106 @@ a { color: var(--navy); }
 .act:disabled { opacity: .5; }
 .drop { position: absolute; inset: 10px; border-radius: 8px; border: 1.5px dashed var(--navy); background: var(--navy-soft); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--navy-text); z-index: 5; pointer-events: none; }
 
+/* 可移动的写信面板与正文局部缩放。缩放值只用于屏幕，不写入邮件。 */
+.compose .c-window-drag { cursor: move; touch-action: none; padding: 10px 0; }
+.compose .c-window-drag:focus-visible, .compose-resize:focus-visible { outline: 2px solid var(--navy); outline-offset: -2px; }
+.compose .c-bar { min-height: 46px; height: auto; flex-wrap: wrap; }
+.compose .c-edit { overflow: auto; }
+.compose .c-field { flex-shrink: 0; }
+.compose .c-editor-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 20px; border-bottom: .5px solid var(--line-2); flex: none; }
+.compose .c-zoom { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.compose .c-zoom .tb { width: 28px; height: 28px; }
+.compose .c-zoom .btn { min-width: 52px; font-variant-numeric: tabular-nums; }
+.compose .c-markdown-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 24px; border-bottom: .5px solid var(--line-2); }
+.compose .c-markdown-tools > span:first-child { display: flex; align-items: center; gap: 6px; color: var(--sec); font-size: 12px; }
+.compose .c-body { flex: 1; min-height: 180px; display: flex; flex-direction: column; }
+.compose .c-body textarea { min-height: 180px; font-size: calc(var(--body-size) * var(--compose-zoom)); overflow: auto; tab-size: 4; }
+.compose .c-visual { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.compose .c-visual[hidden] { display: none; }
+.compose .c-preview-scroll { overflow: auto; flex: 1; min-height: 0; }
+.compose .c-preview-scroll .preview { overflow: visible; zoom: var(--compose-zoom); }
+.compose-focused .c-field, .compose-focused .ai-side, .compose-focused .c-sig { display: none; }
+.compose-resize { position: absolute; right: 1px; bottom: 1px; width: 22px; height: 22px; padding: 0; border: 0; background: linear-gradient(135deg, transparent 55%, var(--sec) 56%, var(--sec) 61%, transparent 62%, transparent 72%, var(--sec) 73%, var(--sec) 78%, transparent 79%); cursor: nwse-resize; touch-action: none; border-radius: 0 0 10px 0; }
+.mail-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.editor-toolbar { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; padding: 7px 20px; border-bottom: .5px solid var(--line-2); flex: none; }
+.editor-toolbar select { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; padding: 4px; font: inherit; font-size: 12px; height: 30px; }
+.editor-font-family { max-width: 144px; }
+.editor-font-size { max-width: 96px; }
+.editor-toolbar select:focus-visible, .color-popover input:focus-visible, .editor-color-swatch:focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; }
+.editor-color-toggle { gap: 3px; }
+.editor-text-color { font-weight: 600; line-height: 17px; border-bottom: 3px solid; min-width: 15px; }
+.editor-background-color { font-weight: 600; line-height: 20px; min-width: 19px; border-radius: 2px; }
+.editor-color-chevron { font-size: 10px; }
+.editor-popover.color-popover { position: fixed; width: 236px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow-y: auto; right: auto; display: grid; gap: 10px; }
+.editor-color-heading { display: flex; align-items: center; justify-content: space-between; font-weight: 600; }
+.editor-color-heading > span { color: var(--sec); font-size: 11px; font-weight: 400; }
+.editor-color-reset { width: 100%; justify-content: center; }
+.editor-color-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; }
+.editor-color-swatch { height: 27px; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+.editor-color-swatch:hover { outline: 1px solid var(--ink); outline-offset: 1px; }
+.editor-color-swatch[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--card); outline: 2px solid var(--navy); outline-offset: 1px; }
+.editor-custom-color { display: grid; gap: 7px; }
+.editor-custom-color-row { display: flex; align-items: center; gap: 6px; }
+.editor-custom-color-row input[type="text"] { min-width: 0; width: 84px; flex: 1; height: 30px; padding: 4px 6px; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; user-select: text; font-size: 12px; }
+.editor-custom-color-row input[type="color"] { width: 30px; height: 30px; padding: 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--card); cursor: pointer; }
+.editor-custom-color [role="alert"] { color: var(--accent-text); font-size: 11px; }
+.editor-tool { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; padding: 0 6px; font: inherit; font-size: 14px; color: var(--ink-2); background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
+.editor-tool:hover { background: var(--hover); }
+.editor-tool[aria-pressed="true"] { color: var(--navy-text); background: var(--sel); box-shadow: inset 0 0 0 1px var(--line); }
+.editor-tool:disabled { opacity: .35; cursor: default; }
+.editor-tool:focus-visible, .table-picker button:focus-visible { outline: 2px solid var(--navy); outline-offset: 1px; }
+.editor-divider { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.mail-editor-popover { position: relative; }
+.editor-popover { position: absolute; top: 36px; left: 0; z-index: 10; background: var(--card); color: var(--ink); padding: 12px; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-raise); font-size: 12px; }
+.table-popover { width: 224px; left: auto; right: 0; }
+.table-picker { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 10px; }
+.table-picker button { aspect-ratio: 1; border: 1px solid var(--sec); background: var(--paper); border-radius: 2px; padding: 0; cursor: pointer; }
+.table-picker button.selected { background: var(--sel); border-color: var(--navy); }
+.link-popover { width: 270px; left: auto; right: 0; display: grid; gap: 10px; }
+.link-popover label { display: grid; gap: 7px; }
+.link-popover input { width: 100%; padding: 6px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 4px; user-select: text; }
+.link-popover [role="alert"] { color: var(--accent-text); }
+.editor-table-tools { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 5px 20px; background: var(--well); border-bottom: .5px solid var(--line-2); }
+.editor-table-tools > span { font-size: 11px; color: var(--sec); }
+.editor-column-width { display: inline-flex; align-items: center; gap: 4px; color: var(--sec); font-size: 12px; }
+.editor-column-width input { width: 66px; height: 26px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--card); }
+.editor-scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px 24px 24px; user-select: text; }
+.mail-document { min-height: 160px; outline: none; font-size: calc(var(--body-size) * var(--compose-zoom)); line-height: 1.65; color: var(--ink-2); overflow-wrap: anywhere; }
+/* Explicit send sizes bypass inherited font-size. Scale only those inline spans,
+   leaving table coordinates unchanged for ProseMirror's column resizing. */
+.mail-document span[data-kojoomail-style="1"][style*="font-size"] { zoom: var(--compose-zoom); }
+.mail-document:focus-visible { box-shadow: -2px 0 0 var(--line); }
+.mail-document p { margin: 0 0 .7em; }
+.mail-document > :first-child { margin-top: 0; }
+.mail-document h1, .mail-document h2, .mail-document h3 { line-height: 1.35; }
+.mail-document a { color: var(--navy-text); text-decoration: underline; }
+.mail-document th a { color: #174e91; }
+.mail-document blockquote { margin: 12px 0; padding-left: 14px; border-left: 3px solid var(--line); color: var(--sec); }
+.mail-document pre { background: var(--well); padding: 10px; border-radius: 5px; white-space: pre-wrap; }
+.mail-document img { max-width: 100%; height: auto; }
+.mail-document .tableWrapper { overflow-x: auto; margin: 12px 0; }
+.mail-document table { border-collapse: collapse; width: 100%; table-layout: fixed; margin: 12px 0; }
+.mail-document th, .mail-document td { border: 1px solid #b8c2cc; padding: 8px 10px; vertical-align: top; min-width: 40px; position: relative; }
+.mail-document td > :last-child, .mail-document th > :last-child { margin-bottom: 0; }
+.mail-document .selectedCell::after { background: var(--sel); opacity: .5; content: ''; position: absolute; inset: 0; pointer-events: none; }
+.mail-document .column-resize-handle { position: absolute; top: 0; bottom: -2px; right: -3px; width: 5px; background: var(--navy); pointer-events: none; }
+.mail-document.resize-cursor { cursor: col-resize; }
+.mail-document ul[data-type="taskList"] { list-style: none; padding-left: 0; }
+.mail-document ul[data-type="taskList"] li { display: flex; gap: 8px; }
+.mail-document ul[data-type="taskList"] li > div { flex: 1; }
+.editor-loading { padding: 24px; color: var(--sec); font-size: 13px; }
+@media (max-width: 850px) {
+  .compose .ai-side { width: 220px; }
+  .compose .c-field { margin: 0 14px; }
+  .compose .c-editor-controls, .editor-toolbar, .editor-table-tools { padding-left: 14px; padding-right: 14px; }
+}
+@media (max-width: 700px) {
+  .compose .ai-side { width: 180px; padding: 12px 8px; }
+  .compose .c-focus-toggle { margin-left: auto; }
+  .compose .c-bar .btn { font-size: 12px; }
+  .link-popover { position: fixed; top: auto; left: 16px; right: 16px; width: auto; }
+}
+
 /* 待办 */
 .todo-page { flex: 1; min-width: 0; display: flex; }
 .todo-list { flex: 1; min-width: 0; display: flex; flex-direction: column; border-right: .5px solid var(--line); }

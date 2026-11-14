@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEventHandler, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './icons'
 import { api, errText } from './lib/api'
@@ -109,16 +109,16 @@ export function MdView({ md, content, className }: { className: string } & ({ md
   )
 }
 
-export function Sheet({ children, onClose, className = '', label, pinned }: { children: ReactNode; onClose: () => void; className?: string; label: string; pinned?: boolean }) {
+export function Sheet({ children, onClose, className = '', label, pinned, style, onPointerDown }: { children: ReactNode; onClose: () => void; className?: string; label: string; pinned?: boolean; style?: CSSProperties; onPointerDown?: PointerEventHandler<HTMLDivElement> }) {
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) { e.stopPropagation(); onClose() } }
-    window.addEventListener('keydown', h, true)
-    return () => window.removeEventListener('keydown', h, true)
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented && !document.querySelector('dialog[open], [role="menu"]')) { e.stopPropagation(); onClose() } }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
   }, [onClose])
   return createPortal(
     <div className="scrim" onMouseDown={(e) => { if (!pinned && e.target === e.currentTarget) onClose() }}>
       {pinned && <div className="scrim-drag" data-tauri-drag-region />}
-      <div className={`sheet sq ${className}`} role="dialog" aria-modal="true" aria-label={label}>{children}</div>
+      <div className={`sheet sq ${className}`} style={style} onPointerDown={onPointerDown} role="dialog" aria-modal="true" aria-label={label}>{children}</div>
     </div>,
     document.body,
   )

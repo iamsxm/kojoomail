@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { ask } from '../lib/ask'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
@@ -10,6 +10,10 @@ import type { MailContent, MailQuote } from '../lib/mail-content'
 import { MdView, Seg, Sheet, useMenu } from '../ui'
 import { keyText } from '../lib/platform'
 import { L, EN } from '../lib/i18n'
+import { useComposeFrame } from '../lib/use-compose-frame'
+import { needsSourceMode } from '../lib/mail-source'
+
+const MailEditor = lazy(() => import('./MailEditor'))
 
 type Field = 'to' | 'cc' | 'bcc'
 
@@ -57,7 +61,11 @@ export default function Compose() {
   const [body, setBody] = useState(initial.body)
   const [showSignature, setShowSignature] = useState(false)
   const [showQuote, setShowQuote] = useState(false)
-  const [mode, setMode] = useState<'edit' | 'preview'>('edit')
+  const [mode, setMode] = useState<'visual' | 'edit' | 'preview'>(() => needsSourceMode(initial.body) ? 'edit' : 'visual')
+  const [visualMounted, setVisualMounted] = useState(mode === 'visual')
+  const [zoom, setZoom] = useState(100)
+  const [focused, setFocused] = useState(false)
+  const frame = useComposeFrame()
   const [files, setFiles] = useState<string[]>(initial.files)
   const [dragging, setDragging] = useState(false)
   const [draftId, setDraftId] = useState<number | null>(c.draftId ?? null)
@@ -99,7 +107,13 @@ export default function Compose() {
     return () => un?.()
   }, [])
 
-  useEffect(() => { setTimeout(() => (rc.to.length ? bodyRef.current : document.getElementById('c-to'))?.focus(), 50) }, [])
+  useEffect(() => { const t = setTimeout(() => (rc.to.length ? bodyRef.current : document.getElementById('c-to'))?.focus(), 50); return () => clearTimeout(t) }, [])
+
+  const changeMode = async (next: typeof mode) => {
+    if (next === 'visual' && needsSourceMode(body) && !await ask(L('正文包含 HTML 排版。可视化编辑会规范化格式，部分自定义样式可能无法保留。是否切换？保留原排版可继续使用 Markdown。', 'This message contains HTML. Visual editing normalizes formatting and may not preserve custom styles. Switch? Keep using Markdown to preserve the original formatting.'))) return
+    if (next === 'visual') setVisualMounted(true)
+    setMode(next)
+  }
 
   const close = async () => {
     if (dirty.current && (body.trim() || subject.trim() || rc.to.length)) {
@@ -210,8 +224,8 @@ export default function Compose() {
   const title = c.mode === 'reply' || c.mode === 'replyAll' ? L(`回复 ${base?.fromName || base?.fromAddr || ''}`, `Reply to ${base?.fromName || base?.fromAddr || ''}`) : c.mode === 'forward' ? L('转发', 'Forward') : L('新邮件', 'New email')
 
   return (
-    <Sheet onClose={close} className="compose" label={title} pinned>
-      <div className="c-bar" data-tauri-drag-region>
+    <Sheet onClose={close} className={`compose${focused ? ' compose-focused' : ''}`} label={title} pinned style={{ ...frame.style, '--compose-zoom': zoom / 100 } as CSSProperties} onPointerDown={frame.onPointerDown}>
+      <div className="c-bar">
         <button className="btn primary sq" onClick={send}><Icon name="send" size={15} />{L('发送', 'Send')}</button>
         <span style={{ width: .5, height: 18, background: 'var(--line)', margin: '0 6px' }} />
         <button className="tb" aria-label={L('添加附件', 'Attach files')} data-tip={L('添加附件', 'Attach files')} onClick={async () => {
@@ -219,12 +233,14 @@ export default function Compose() {
           if (r) setFiles((f) => [...f, ...(Array.isArray(r) ? r : [r]).filter((p) => !f.includes(p))])
         }}><Icon name="clip" /></button>
         <button className="tb" aria-label={L('舍弃草稿', 'Discard draft')} data-tip={L('舍弃草稿', 'Discard draft')} onClick={async () => { if (!body.trim() || await ask(L('舍弃这封草稿？', 'Discard this draft?'))) discard() }}><Icon name="trash" /></button>
-        <div className="grow truncate" data-tauri-drag-region style={{ textAlign: 'center', fontSize: 13, fontWeight: 600 }}>{title}</div>
+        <div className="grow truncate c-window-drag" data-compose-drag role="button" tabIndex={0} aria-label={L('移动写信窗口（方向键移动，Home 居中，双击最大化）', 'Move compose window (arrow keys move, Home centers, double-click maximizes)')} onKeyDown={(e) => frame.onKeyDown(e)} onDoubleClick={frame.toggleMaximize} style={{ textAlign: 'center', fontSize: 13, fontWeight: 600 }}>{title}</div>
         {s.aiConfigured ? (
           <button className="btn sm sq" style={{ background: aiOpen ? 'var(--sel)' : 'transparent', boxShadow: 'none' }} aria-pressed={aiOpen} onClick={() => setAiOpen(!aiOpen)}><Icon name="sparkle" size={15} />{L('AI 助手', 'AI assistant')}</button>
         ) : (
           <button className="btn sm sq" style={{ background: 'transparent', boxShadow: 'none', color: 'var(--sec)' }} data-tip={L('改写、翻译、核对要点要先设置 AI', 'Set up AI to rewrite, translate and fact check')} onClick={() => s.toast(L('还没设置 AI', "AI isn't set up yet"), { action: { label: L('存草稿并去设置', 'Save draft and set up'), run: async () => { if (useApp.getState().compose?.key === c.key) await closeRef.current(); s.openAiSettings() } }, ttl: 6000 })}><Icon name="sparkle" size={15} />{L('AI 助手', 'AI assistant')}</button>
         )}
+        <button className="tb" aria-label={L('居中写信窗口', 'Center compose window')} data-tip={L('恢复大小并居中', 'Restore size and center')} onClick={frame.reset}><Icon name="refresh" /></button>
+        <button className="tb" aria-label={frame.maximized ? L('还原写信窗口', 'Restore compose window') : L('最大化写信窗口', 'Maximize compose window')} data-tip={frame.maximized ? L('还原', 'Restore') : L('最大化', 'Maximize')} onClick={frame.toggleMaximize}><Icon name={frame.maximized ? 'restore' : 'max'} /></button>
         <button className="tb" aria-label={L('关闭（自动存草稿）', 'Close (saves draft)')} data-tip={L('关闭，自动存草稿', 'Close and save draft')} onClick={close}><Icon name="x" /></button>
       </div>
       <div className="c-main">
@@ -239,9 +255,17 @@ export default function Compose() {
           {showCc && <Recipients label={L('抄送', 'Cc')} list={rc.cc} onChange={(v) => { setRc({ ...rc, cc: v }); touch() }} />}
           {showCc && <Recipients label={L('密送', 'Bcc')} list={rc.bcc} onChange={(v) => { setRc({ ...rc, bcc: v }); touch() }} />}
           <div className="c-field"><span className="k">{L('主题', 'Subject')}</span><input value={subject} onChange={(e) => { setSubject(e.target.value); touch() }} aria-label={L('主题', 'Subject')} style={{ fontWeight: 500 }} /></div>
-          <div className="row" style={{ padding: '10px 24px 0', gap: 10 }}>
-            <Seg small value={mode} onChange={setMode} options={[['edit', L('编辑', 'Edit')], ['preview', L('预览', 'Preview')]]} />
-            <span className="row" style={{ gap: 5, fontSize: 12, color: 'var(--sec)' }}><Icon name="markdown" size={16} />{L('支持 Markdown，发送时自动排版', 'Markdown supported, formatted when sent')}</span>
+          <div className="c-editor-controls">
+            <Seg small value={mode} onChange={changeMode} options={[["visual", L('可视化', 'Visual')], ['edit', 'Markdown'], ['preview', L('发送预览', 'Send preview')]]} />
+            <div className="c-zoom" role="group" aria-label={L('正文显示缩放（不改变发送字号）', 'Body display zoom (does not change sent font size)')}>
+              <button type="button" className="tb" aria-label={L('缩小正文', 'Zoom out body')} disabled={zoom <= 75} onClick={() => setZoom((z) => Math.max(75, z - 25))}><Icon name="minus" size={14} /></button>
+              <button type="button" className="btn sm" title={L('重置缩放，不影响发送字号', 'Reset display zoom; sent font size is unchanged')} onClick={() => setZoom(100)}>{zoom}%</button>
+              <button type="button" className="tb" aria-label={L('放大正文', 'Zoom in body')} disabled={zoom >= 200} onClick={() => setZoom((z) => Math.min(200, z + 25))}><Icon name="plus" size={14} /></button>
+            </div>
+            <button className="btn sm c-focus-toggle" aria-pressed={focused} onClick={() => setFocused(!focused)}>{focused ? L('退出专注', 'Exit focus') : L('专注正文', 'Focus body')}</button>
+          </div>
+          {mode === 'edit' && <div className="c-markdown-tools">
+            <span><Icon name="markdown" size={16} />{L('Markdown，发送时自动排版', 'Markdown, formatted when sent')}</span>
             {mode === 'edit' && (
               <span className="row" style={{ marginLeft: 'auto', gap: 2 }}>
                 {([['B', L('粗体', 'Bold'), () => wrap('**', '**', L('粗体', 'bold'))], ['I', L('斜体', 'Italic'), () => wrap('*', '*', L('斜体', 'italic'))], ['•', L('列表', 'Bulleted list'), () => prefix('- ')], ['1.', L('编号', 'Numbered list'), () => prefix('1. ')], ['❝', L('引用', 'Quote'), () => prefix('> ')], ['🔗', L('链接', 'Link'), () => wrap('[', '](https://)', L('链接文字', 'link text'))]] as [string, string, () => void][]).map(([t, tip, run]) => (
@@ -249,10 +273,18 @@ export default function Compose() {
                 ))}
               </span>
             )}
+          </div>}
+          <div className="c-body">
+            {visualMounted && <div className="c-visual" hidden={mode !== 'visual'}>
+              <Suspense fallback={<div className="editor-loading">{L('正在加载编辑器…', 'Loading editor…')}</div>}>
+                <MailEditor value={body} onChange={(v) => { setBody(v); touch() }} autoFocus={initial.to.length > 0} active={mode === 'visual'} />
+              </Suspense>
+            </div>}
+            {mode === 'edit' && <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('Markdown 正文', 'Markdown message body')} spellCheck={false} />}
+            {mode === 'preview' && <div className="c-preview-scroll"><MdView className="preview" content={content} /></div>}
           </div>
-          {mode === 'edit' ? (
+          {mode !== 'preview' && (
             <>
-              <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('正文', 'Message body')} spellCheck={false} />
               {sig && (
                 <div className="c-sig">
                   <button type="button" className="btn sm sq" style={{ justifySelf: 'start', background: 'var(--well)', boxShadow: 'none', color: 'var(--sec)' }} aria-expanded={showSignature} aria-controls="c-signature" onClick={() => setShowSignature((shown) => !shown)}>
@@ -264,10 +296,8 @@ export default function Compose() {
                 </div>
               )}
             </>
-          ) : (
-            <MdView className="preview" content={content} />
           )}
-          {mode === 'edit' && initial.quote && (
+          {mode !== 'preview' && initial.quote && (
             <div style={{ padding: '0 24px 8px' }}>
               <button className="btn sm sq" style={{ background: 'var(--well)', boxShadow: 'none', color: 'var(--sec)' }} onClick={() => setShowQuote(!showQuote)}>
                 {showQuote ? L('收起引用的原邮件', 'Hide original email') : L(`··· 显示${initial.mode === 'forward' ? '转发' : '引用'}的原邮件`, `··· Show ${initial.mode === 'forward' ? 'forwarded' : 'quoted'} email`)}
@@ -338,6 +368,7 @@ export default function Compose() {
           </aside>
         )}
       </div>
+      {!frame.maximized && <button className="compose-resize" data-compose-resize aria-label={L('调整写信窗口大小（拖动或使用方向键）', 'Resize compose window (drag or use arrow keys)')} onKeyDown={(e) => frame.onKeyDown(e, true)} title={L('拖动调整窗口大小', 'Drag to resize window')} />}
       {menu.node}
     </Sheet>
   )

@@ -90,6 +90,10 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: node scripts/desktop.mjs bundle ${{ matrix.target }} release ${{ inputs.signed && 'signed' || 'preview' }}
+      - name: Test Windows installer process cleanup
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-installer.ps1
       - name: Check and collect assets
         run: node scripts/release.mjs collect ${{ matrix.target }} ${{ inputs.signed && 'signed' || 'preview' }}
       - name: Verify macOS app and bridge architectures
