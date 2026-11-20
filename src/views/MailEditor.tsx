@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react'
+import { NodeSelection, type Transaction } from '@tiptap/pm/state'
 import { mailEditorExtensions, MAIL_FONTS, MAIL_FONT_SIZES, selectionTextStyle } from '../lib/mail-editor'
+import { imageByteLength, MAX_IMAGE_BYTES, MAX_INLINE_IMAGE_BYTES, readInlineImage } from '../lib/mail-image'
 import { L } from '../lib/i18n'
 import { Icon } from '../icons'
 import { useEditorPopovers } from '../lib/use-editor-popovers'
@@ -14,6 +16,10 @@ export default function MailEditor({ value, onChange, autoFocus, active }: { val
   const [url, setUrl] = useState('')
   const [linkError, setLinkError] = useState('')
   const widthRef = useRef<HTMLInputElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const imageImport = useRef<AbortController | null>(null)
+  const [readingImages, setReadingImages] = useState(false)
+  const [imageError, setImageError] = useState('')
   const editor = useEditor({
     extensions: mailEditorExtensions(),
     content: value, contentType: 'markdown',
@@ -35,14 +41,57 @@ export default function MailEditor({ value, onChange, autoFocus, active }: { val
     textStyle: selectionTextStyle(e),
     cell: e.state.selection.$from.start(),
     cellAttrs: e.isActive('tableHeader') ? e.getAttributes('tableHeader') : e.getAttributes('tableCell'),
+    image: e.state.selection instanceof NodeSelection && e.state.selection.node.type.name === 'image'
+      ? { position: e.state.selection.from, width: e.state.selection.node.attrs.width, height: e.state.selection.node.attrs.height, alt: e.state.selection.node.attrs.alt }
+      : null,
     undo: e.can().undo(), redo: e.can().redo(),
   } : null })
   useEffect(() => {
     if (!editor || !active || lastValue.current === value) return
+    imageImport.current?.abort()
     editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false })
     lastValue.current = value
   }, [editor, value, active])
+  useEffect(() => () => imageImport.current?.abort(), [active])
   if (!editor || !state) return null
+  const insertImages = async (files: File[]) => {
+    if (imageImport.current) return
+    setImageError('')
+    if (files.some((file) => file.size > MAX_IMAGE_BYTES)) {
+      setImageError(L('每张正文图片最大 3 MB。', 'Each inline image can be up to 3 MB.'))
+      return
+    }
+    const fits = () => {
+      const sources = new Set<string>()
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === 'image' && typeof node.attrs.src === 'string') sources.add(node.attrs.src)
+      })
+      const used = [...sources].reduce((sum, src) => sum + imageByteLength(src), 0)
+      return used + files.reduce((sum, file) => sum + file.size, 0) <= MAX_INLINE_IMAGE_BYTES
+    }
+    const limitError = L('正文图片合计不能超过 10 MB。', 'Inline images can total up to 10 MB.')
+    if (!fits()) { setImageError(limitError); return }
+    const request = new AbortController()
+    imageImport.current = request
+    let bookmark = editor.state.selection.getBookmark()
+    const trackSelection = ({ transaction }: { transaction: Transaction }) => { bookmark = bookmark.map(transaction.mapping) }
+    editor.on('transaction', trackSelection)
+    setReadingImages(true)
+    try {
+      const images = await Promise.all(files.map((file) => readInlineImage(file).catch(() => null)))
+      if (request.signal.aborted || editor.isDestroyed) return
+      if (!fits()) { setImageError(limitError); return }
+      const valid = images.filter((image) => image !== null)
+      if (valid.length !== images.length) setImageError(L('部分图片无法读取。支持 PNG、JPEG、GIF 和 WebP。', 'Some images could not be read. Supported formats are PNG, JPEG, GIF and WebP.'))
+      if (!valid.length) return
+      const { from, to } = bookmark.resolve(editor.state.doc)
+      editor.chain().focus().insertContentAt({ from, to }, valid).run()
+    } finally {
+      editor.off('transaction', trackSelection)
+      imageImport.current = null
+      if (!editor.isDestroyed) setReadingImages(false)
+    }
+  }
   const fontValue = MAIL_FONTS.find((font) => fontKey(font[2]) === fontKey(state.textStyle.fontFamily))?.[2] ?? state.textStyle.fontFamily
   const applyColumnWidth = () => {
     const raw = widthRef.current?.value || ''
@@ -131,8 +180,30 @@ export default function MailEditor({ value, onChange, autoFocus, active }: { val
           </div>
         </div>}
       </div>
+      {tool(L('插入图片', 'Insert image'), <Icon name="image" />, () => fileRef.current?.click(), undefined, readingImages)}
+      <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp,.jpg,.jpeg,.png,.gif,.webp" multiple hidden onChange={(e) => {
+        const files = Array.from(e.currentTarget.files ?? [])
+        e.currentTarget.value = ''
+        if (files.length) void insertImages(files)
+      }} />
       {tool(L('清除格式', 'Clear formatting'), 'Tx', () => { editor.chain().focus().unsetAllMarks().clearNodes().run() })}
     </div>
+    {state.image && <form key={JSON.stringify(state.image)} className="editor-image-tools" aria-label={L('图片设置', 'Image settings')} onSubmit={(e) => {
+      e.preventDefault()
+      const data = new FormData(e.currentTarget)
+      const width = Number(data.get('width')) || null
+      editor.chain().focus().updateAttributes('image', {
+        width, height: width === Number(state.image?.width) ? state.image?.height : null, alt: String(data.get('alt') ?? ''),
+      }).run()
+    }}>
+      <label>{L('图片宽度', 'Image width')} <input name="width" type="number" min="1" step="1" defaultValue={state.image.width ?? ''} placeholder={L('原始', 'Original')} /> px</label>
+      <label>{L('替代文字', 'Alt text')} <input name="alt" defaultValue={state.image.alt ?? ''} /></label>
+      <button type="submit" className="btn sm">{L('应用', 'Apply')}</button>
+      <button type="button" className="btn sm" onClick={() => editor.chain().focus().updateAttributes('image', { width: null, height: null }).run()}>{L('恢复原始尺寸', 'Reset size')}</button>
+      <button type="button" className="btn sm" onClick={() => editor.chain().focus().deleteSelection().run()}>{L('删除图片', 'Remove image')}</button>
+    </form>}
+    {readingImages && <div className="editor-image-status" role="status">{L('正在读取图片…', 'Reading images…')}</div>}
+    {imageError && <div className="editor-image-status" role="alert">{imageError}</div>}
     {state.table && <div className="editor-table-tools" role="toolbar" aria-label={L('表格操作', 'Table actions')}>
       {([
         [L('加行', 'Add row'), () => editor.chain().focus().addRowAfter().run()],
@@ -149,6 +220,17 @@ export default function MailEditor({ value, onChange, autoFocus, active }: { val
       <button type="button" className="btn sm" onMouseDown={(e) => e.preventDefault()} onClick={applyColumnWidth}>{L('应用列宽', 'Apply width')}</button>
       <span>{L('拖动列边缘调整宽度 · Tab 切换单元格', 'Drag column edges to resize · Tab moves between cells')}</span>
     </div>}
-    <div className="editor-scroll"><EditorContent editor={editor} /></div>
+    <div className="editor-scroll" onPasteCapture={(e) => {
+      const clipboard = e.clipboardData
+      const candidates = clipboard.files.length ? Array.from(clipboard.files) : Array.from(clipboard.items).flatMap((item) => {
+        const file = item.getAsFile()
+        return file ? [file] : []
+      })
+      const files = candidates.filter((file) => file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(file.name))
+      if (!files.length) return
+      e.preventDefault()
+      e.stopPropagation()
+      void insertImages(files)
+    }}><EditorContent editor={editor} /></div>
   </div>
 }

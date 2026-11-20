@@ -2326,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "kojoomail"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -2376,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "kojoomail-mcp"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",

@@ -79,6 +79,28 @@ pub struct Grant {
     pub refresh: String,
     pub access: String,
     pub expires: Instant,
+    scope: Option<String>,
+}
+
+pub(crate) fn check_mail_scope(grant: &Grant) -> Result<(), String> {
+    if grant.provider == "gmail" && grant.scope.as_deref().is_some_and(|scopes| !scopes.split_whitespace().any(|scope| scope == "https://mail.google.com/")) {
+        return Err(crate::i18n::t("没有拿到 Gmail 权限，请重新登录，并在谷歌授权页勾上「读取、撰写、发送 Gmail 邮件」那一项。", "Kojoo Mail didn't get access to Gmail. Please sign in again and grant permission to read, compose and send Gmail messages.").into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn gmail_requires_mail_scope_when_the_provider_reports_permissions() {
+    let mut grant = Grant { provider: "gmail".into(), email: String::new(), refresh: String::new(), access: String::new(), expires: Instant::now(), scope: None };
+    assert!(check_mail_scope(&grant).is_ok());
+    grant.scope = Some("openid email".into());
+    assert!(check_mail_scope(&grant).is_err());
+    grant.scope = Some("openid https://mail.google.com/ email".into());
+    assert!(check_mail_scope(&grant).is_ok());
+    grant.provider = "outlook".into();
+    grant.scope = Some("openid email".into());
+    assert!(check_mail_scope(&grant).is_ok());
 }
 
 /// 授权结果先放这里，前端拿票据来添加账号（长期授权不经过界面）
@@ -204,7 +226,7 @@ async fn authorize_with(http: &reqwest::Client, provider: &str, sp: &Spec, cid: 
     let mut p = PENDING.lock().unwrap();
     let map = p.get_or_insert_with(HashMap::new);
     map.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(1800));
-    map.insert(ticket.clone(), (Grant { provider: provider.into(), email: email.clone(), refresh, access: t.access, expires: t.expires }, Instant::now()));
+    map.insert(ticket.clone(), (Grant { provider: provider.into(), email: email.clone(), refresh, access: t.access, expires: t.expires, scope: t.scope }, Instant::now()));
     Ok((ticket, email))
 }
 
@@ -291,6 +313,7 @@ struct Tokens {
     refresh: Option<String>,
     id_token: Option<String>,
     expires: Instant,
+    scope: Option<String>,
 }
 
 async fn token_call(http: &reqwest::Client, url: &str, form: &[(&str, &str)]) -> Result<Tokens, TokenErr> {
@@ -321,6 +344,7 @@ async fn token_call(http: &reqwest::Client, url: &str, form: &[(&str, &str)]) ->
         refresh: v["refresh_token"].as_str().map(String::from),
         id_token: v["id_token"].as_str().map(String::from),
         expires: Instant::now() + Duration::from_secs(secs.saturating_sub(120).max(60)),
+        scope: v["scope"].as_str().map(String::from),
     })
 }
 

@@ -74,6 +74,28 @@ test('自定义 HTML 样式进入源码模式，普通 Markdown 和编辑器下�
   assert.equal(needsSourceMode('**粗体** <u>下划线</u>\n\n正文'), false)
 })
 
+test('正文图片插在文字之间，尺寸和替代文字在保存及重开后保留', () => {
+  const src = `data:image/png;base64,${'A'.repeat(480_000)}`
+  withEditor('前后', (editor) => {
+    editor.commands.insertContentAt(2, { type: 'image', attrs: { src } })
+    editor.commands.setNodeSelection(2)
+    editor.commands.updateAttributes('image', { width: 240, height: 120, alt: '截图 "示例"' })
+    assert.equal(editor.view.dom.querySelector('img').style.width, '240px')
+    const saved = editor.getMarkdown()
+    assert.equal(needsSourceMode(saved), false)
+    assert.equal(needsSourceMode(saved.replace('width="240"', 'style="float:right" width="240"')), true)
+    for (const markdown of [saved, saved.slice(1, -1)]) {
+      withEditor(markdown, (restored) => {
+        const image = restored.getJSON().content[0].content.find((node) => node.type === 'image')
+        assert.equal(image.attrs.src.length, src.length)
+        assert.equal(Number(image.attrs.width), 240)
+        assert.equal(Number(image.attrs.height), 120)
+        assert.equal(image.attrs.alt, '截图 "示例"')
+      })
+    }
+  })
+})
+
 test('粗体、下划线、列表、任务、图片和安全链接编辑后可重开；撤销恢复正文', () => {
   withEditor('**加粗** <u>强调</u>\n\n- 列表\n\n- [x] 已完成\n\n[链接](https://example.com)\n\n![图片](https://example.com/p.png)', (e) => {
     const previous = e.getMarkdown()

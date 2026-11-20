@@ -86,14 +86,62 @@ const tableOptions = {
   resizable: true,
   HTMLAttributes: { 'data-kojoomail-table': '1', border: '1', cellpadding: '8', cellspacing: '0', style: 'border-collapse:collapse;border:1px solid #b8c2cc' },
 }
+const MailImage = Image.extend({
+  addNodeView() {
+    const createView = this.parent?.()
+    if (!createView) return null
+    return (props) => {
+      const view = createView(props)
+      const img = view.dom instanceof HTMLElement ? view.dom.querySelector('img') : null
+      const update = view.update?.bind(view)
+      if (img && update) view.update = (node, decorations, innerDecorations) => {
+        if (!update(node, decorations, innerDecorations)) return false
+        img.style.width = node.attrs.width ? `${node.attrs.width}px` : ''
+        img.style.height = node.attrs.height ? `${node.attrs.height}px` : ''
+        return true
+      }
+      return view
+    }
+  },
+  renderMarkdown(node, helpers, context) {
+    const { src, alt, title, width, height } = node.attrs ?? {}
+    if (!width && !height && !src?.startsWith('data:')) return this.parent?.(node, helpers, context) ?? ''
+    const img = document.createElement('img')
+    img.dataset.kojoomailImage = '1'
+    for (const [name, value] of Object.entries({ src, alt, title, width, height })) {
+      if (value != null) img.setAttribute(name, String(value))
+    }
+    return img.outerHTML
+  },
+}).configure({
+  inline: true,
+  allowBase64: true,
+  resize: { enabled: true, directions: ['bottom-right'], minWidth: 16, minHeight: 1, alwaysPreserveAspectRatio: true },
+})
+
+const MailStarterKit = StarterKit.extend({
+  addExtensions() {
+    return StarterKit.config.addExtensions?.call({ ...this, parent: undefined }).map((extension) => extension.name === 'paragraph' ? extension.extend({
+      parseMarkdown(token, helpers) {
+        // Standalone Markdown images still need a paragraph in an inline image schema.
+        const tokens = token.tokens ?? []
+        if (tokens.length === 1 && tokens[0].type === 'image') {
+          return helpers.createNode('paragraph', undefined, helpers.parseInline(tokens))
+        }
+        return this.parent?.(token, helpers) ?? null
+      },
+    }) : extension) ?? []
+  },
+})
+
 function baseExtensions() {
   return [
-    StarterKit.configure({ link: { openOnClick: false, defaultProtocol: 'https', protocols: ['http', 'https', 'mailto', 'tel'] } }),
+    MailStarterKit.configure({ link: { openOnClick: false, defaultProtocol: 'https', protocols: ['http', 'https', 'mailto', 'tel'] } }),
     MailTextStyle, FontFamily, FontSize, Color, BackgroundColor,
     TableRow,
     TableCell.configure({ HTMLAttributes: { style: cellStyle } }),
     TableHeader.configure({ HTMLAttributes: { style: `${cellStyle};background-color:#f2f4f7;color:#1f2a37` } }),
-    Image, TaskList, TaskItem.configure({ nested: true }),
+    MailImage, TaskList, TaskItem.configure({ nested: true }),
   ]
 }
 

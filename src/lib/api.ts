@@ -128,6 +128,7 @@ export const api = {
   oauthCancel: () => call<void>('oauth_cancel'),
   removeAccount: (id: number) => call<void>('remove_account', { id }),
   retryAccount: (id: number) => call<void>('retry_account', { id }),
+  accountOrder: (ids: number[]) => call<void>('account_order', { ids }),
   send: (d: DraftIn) => call<void>('send_mail', { d }),
   renderMail: (content: MailContent) => call<RenderedMail>('render_mail', { content }),
   saveDraft: (d: DraftIn) => call<number>('save_draft', { d }),

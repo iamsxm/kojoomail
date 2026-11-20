@@ -41,6 +41,7 @@ pub struct RenderedMail {
 }
 
 const SIG_RULE: &str = "<div style=\"border-top:1px solid #d8d8d8;margin:18px 0 12px\"></div>";
+const MAX_IMAGE_BYTES: usize = 3_000_000;
 const TAGS: &str = "a abbr b bdi bdo big blockquote br caption center cite code col colgroup dd del div dl dt em figcaption figure font h1 h2 h3 h4 h5 h6 hr i img ins kbd li mark ol p pre q s samp small span strike strong sub sup table tbody td tfoot th thead tr tt u ul var wbr";
 const ATTRS: &str = "align bgcolor color dir height lang style title valign width";
 const CSS_PROPS: &str = "color font font-family font-size font-style font-variant font-weight letter-spacing line-height text-align text-decoration text-decoration-color text-decoration-line text-decoration-style text-indent text-transform text-shadow vertical-align white-space word-break word-spacing overflow-wrap word-wrap direction unicode-bidi width height min-width max-width min-height max-height box-sizing aspect-ratio object-fit background background-color border border-width border-style border-color border-radius border-collapse border-spacing box-shadow outline outline-color outline-style outline-width table-layout caption-side empty-cells list-style list-style-type list-style-position float clear display overflow overflow-x overflow-y margin padding";
@@ -98,14 +99,28 @@ fn clean_css(css: &str) -> String {
 }
 
 fn safe_uri(tag: &str, attr: &str, value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    if lower.starts_with("data:") {
+    if value.get(..5).is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:")) {
         return tag == "img"
             && attr == "src"
-            && value.len() <= 256 * 1024
-            && ["png", "jpeg", "jpg", "gif", "webp"].iter().any(|mime| lower.starts_with(&format!("data:image/{mime};base64,")));
+            && image_data(value).is_some();
     }
-    ["http:", "https:", "mailto:", "tel:"].iter().any(|scheme| lower.starts_with(scheme))
+    ["http:", "https:", "mailto:", "tel:"].iter().any(|scheme| value.get(..scheme.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme)))
+}
+
+pub(crate) fn image_data(src: &str) -> Option<(&'static str, &str)> {
+    let (header, data) = src.split_once(',')?;
+    if header.len() > 24 || data.len() > MAX_IMAGE_BYTES * 4 / 3 {
+        return None;
+    }
+    let header = header.to_ascii_lowercase();
+    let mime = match header.strip_prefix("data:image/")?.strip_suffix(";base64")? {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    Some((mime, data))
 }
 
 pub fn sanitize(input: &str) -> String {
@@ -550,7 +565,7 @@ mod tests {
         for src in ["data:image/svg+xml;base64,PHN2Zz4=", "data:text/html;base64,PHNjcmlwdD4=", "cid:image1", "file:///logo.png", "/logo.png"] {
             assert!(!markdown(&format!("<img src=\"{src}\">")).contains("src="), "{src}");
         }
-        assert!(!markdown(&format!("<img src=\"data:image/png;base64,{}\">", "A".repeat(300 * 1024))).contains("src="));
+        assert!(!markdown(&format!("<img src=\"data:image/png;base64,{}\">", "A".repeat(MAX_IMAGE_BYTES * 4 / 3 + 4))).contains("src="));
     }
 
     #[test]
