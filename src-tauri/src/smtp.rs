@@ -3,12 +3,17 @@
 
 use crate::mime::Addr;
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::transport::smtp::client::{AsyncSmtpConnection, AsyncTokioStream, TlsParameters};
 use lettre::transport::smtp::extension::ClientId;
 use mail_builder::headers::address::Address as MbAddress;
+use mail_builder::mime::MimePart;
 use mail_builder::MessageBuilder;
+use regex::Regex;
+use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -182,6 +187,57 @@ pub async fn test(c: &SmtpCfg) -> Result<()> {
     Ok(())
 }
 
+struct InlineImage {
+    mime: &'static str,
+    cid: String,
+    bytes: Vec<u8>,
+}
+
+// 输入来自 html::render。清洗器已规范化属性引号并转义文本，按完整标签扫描，
+// 避免将 alt/title 属性里形似图片标签的文字误当作 MIME 部件。
+fn prepare_inline_images(html: &str) -> Result<(String, Vec<InlineImage>, usize)> {
+    if !html.as_bytes().windows(5).any(|prefix| prefix.eq_ignore_ascii_case(b"data:")) {
+        return Ok((html.to_owned(), vec![], 0));
+    }
+    static TAG: OnceLock<Regex> = OnceLock::new();
+    static ATTR: OnceLock<Regex> = OnceLock::new();
+    let tag = TAG.get_or_init(|| Regex::new(r#"<[a-z][a-z0-9]*(?:[^<>"']|"[^"]*"|'[^']*')*>"#).unwrap());
+    let attr = ATTR.get_or_init(|| Regex::new(r#" ([^\s=]+)="([^"]*)""#).unwrap());
+    let mut html_out = String::with_capacity(html.len());
+    let mut images = vec![];
+    let mut sources = HashMap::new();
+    let mut total = 0;
+    let mut end = 0;
+    for img in tag.find_iter(html).filter(|tag| tag.as_str().starts_with("<img ")) {
+        let Some(src) = attr.captures_iter(img.as_str()).find(|caps| &caps[1] == "src").and_then(|caps| caps.get(2)) else { continue };
+        let Some((mime, data)) = crate::html::image_data(src.as_str()) else { continue };
+        let offset = img.start() + src.start();
+        let cid = match sources.get(src.as_str()) {
+            Some(cid) => cid,
+            None => {
+                let bytes = STANDARD.decode(data).map_err(|_| anyhow!(crate::i18n::t("正文里有无法读取的图片", "The message contains an unreadable image")))?;
+                total += bytes.len();
+                if total > 10_000_000 {
+                    return Err(anyhow!(crate::i18n::t("正文图片合计不能超过 10 MB", "Inline images cannot exceed 10 MB in total")));
+                }
+                let cid = format!("image-{}@kojoo.local", images.len() + 1);
+                images.push(InlineImage { mime, cid: cid.clone(), bytes });
+                sources.entry(src.as_str()).or_insert(cid)
+            }
+        };
+        html_out.push_str(&html[end..offset]);
+        html_out.push_str("cid:");
+        html_out.push_str(cid);
+        end = img.start() + src.end();
+    }
+    html_out.push_str(&html[end..]);
+    Ok((html_out, images, total))
+}
+
+pub(crate) fn inline_image_size(html: &str) -> Result<usize> {
+    Ok(prepare_inline_images(html)?.2)
+}
+
 /// 组好原始邮件。SMTP 发信不带 Bcc 头（密送人只走信封）；Graph 发信没有信封，靠 Bcc 头给密送人，Graph 发出时会去掉
 pub fn build(o: &Outgoing, domain: &str, bcc_header: bool) -> Result<Vec<u8>> {
     let list = |v: &Vec<Addr>| MbAddress::new_list(v.iter().map(|a| MbAddress::new_address(if a.name.is_empty() { None } else { Some(a.name.clone()) }, a.email.clone())).collect());
@@ -199,15 +255,35 @@ pub fn build(o: &Outgoing, domain: &str, bcc_header: bool) -> Result<Vec<u8>> {
     if bcc_header && !o.bcc.is_empty() {
         b = b.bcc(list(&o.bcc));
     }
-    if !o.html.is_empty() {
-        b = b.html_body(o.html.clone());
-    }
     if !o.in_reply_to.is_empty() {
         b = b.in_reply_to(o.in_reply_to.trim_matches(|c| c == '<' || c == '>').to_string());
     }
     let refs: Vec<String> = o.references.split_whitespace().map(|s| s.trim_matches(|c| c == '<' || c == '>').to_string()).filter(|s| !s.is_empty()).collect();
     if !refs.is_empty() {
         b = b.references(refs);
+    }
+    let (html, images, image_size) = prepare_inline_images(&o.html)?;
+    if !images.is_empty() {
+        if image_size + o.attachments.iter().map(|part| part.data.len()).sum::<usize>() > 25 * 1024 * 1024 {
+            return Err(anyhow!(crate::i18n::t("正文图片和附件合计超过 25 MB，请减少文件或改用下载链接", "Inline images and attachments exceed 25 MB. Remove some files or share a download link.")));
+        }
+        let mut related = vec![MimePart::new("text/html", html)];
+        related.extend(images.into_iter().map(|image| MimePart::new(image.mime, image.bytes).inline().cid(image.cid)));
+        let alternative = MimePart::new("multipart/alternative", vec![
+            MimePart::new("text/plain", o.text.as_str()),
+            MimePart::new("multipart/related", related),
+        ]);
+        let body = if o.attachments.is_empty() {
+            alternative
+        } else {
+            let mut parts = vec![alternative];
+            parts.extend(o.attachments.iter().map(|part| MimePart::new(part.mime.as_str(), part.data.as_slice()).attachment(part.name.as_str())));
+            MimePart::new("multipart/mixed", parts)
+        };
+        return Ok(b.body(body).write_to_vec()?);
+    }
+    if !html.is_empty() {
+        b = b.html_body(html);
     }
     for a in &o.attachments {
         b = b.attachment(a.mime.clone(), a.name.clone(), a.data.clone());
@@ -239,6 +315,33 @@ pub async fn send(c: &SmtpCfg, o: &Outgoing, raw: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_image_round_trips_through_related_mime_with_its_dimensions() {
+        let src = "data:image/png;base64,iVBORw0KGgo=";
+        let content = crate::html::MailContent {
+            body: format!(r#"前<img src="{src}" width="240" height="120" alt="截图">后<img src="{src}">"#),
+            ..Default::default()
+        };
+        let rendered = crate::html::render(&content);
+        assert_eq!(inline_image_size(&rendered.html).unwrap(), 8);
+        let out = Outgoing {
+            from: Addr { email: "from@example.com".into(), name: String::new() },
+            to: vec![Addr { email: "to@example.com".into(), name: String::new() }],
+            cc: vec![], bcc: vec![], subject: "图".into(),
+            text: rendered.text, html: rendered.html,
+            in_reply_to: String::new(), references: String::new(),
+            attachments: vec![OutAttachment { mime: "text/plain".into(), name: "notes.txt".into(), data: b"notes".to_vec() }],
+        };
+        let raw = build(&out, "example.com", false).unwrap();
+        assert!(String::from_utf8_lossy(&raw).contains("multipart/related"));
+        let parsed = crate::mime::parse_full(&raw);
+        assert_eq!(parsed.html.matches("cid:image-1@kojoo.local").count(), 2);
+        assert!(parsed.html.contains(r#"width="240" height="120""#));
+        assert_eq!(crate::mime::inline_images(&raw).len(), 1);
+        let reopened = crate::mime::embed_inline_images(&parsed.html, &raw);
+        assert_eq!(reopened.matches(src).count(), 2);
+    }
 
     /// SMTP 版不带 Bcc 头（密送人只走信封）；Graph 版要带，Graph 靠它投递给密送人
     #[test]

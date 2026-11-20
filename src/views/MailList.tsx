@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { ask } from '../lib/ask'
 import { Icon } from '../icons'
 import { rowKey, useApp } from '../store'
@@ -99,6 +99,10 @@ export default function MailList() {
   const isDrafts = s.view.kind === 'drafts'
   // 分类页签（AI 整理）：当前视图里有邮件的分类都列出来，常用分类排前面；数字是未读
   const viewAcc = s.view.kind === 'all' || s.view.kind === 'folder' ? s.view.accountId : undefined
+  const accountNames = useMemo(() => {
+    const names = s.accounts.map((account) => account.label || account.email.split('@')[0])
+    return new Map(s.accounts.map((account, index) => [account.id, names.indexOf(names[index]) === names.lastIndexOf(names[index]) ? names[index] : account.email]))
+  }, [s.accounts])
   const focus: string[] = viewAcc ? (s.accounts.find((a) => a.id === viewAcc)?.focus ?? []) : FOCUS_CATS.filter((c) => s.accounts.some((a) => a.focus.includes(c)))
   const rank = (c: string) => (focus.includes(c) ? 0 : 1)
   // 常用分类没邮件也常驻（「待办」还包括有没做完待办事项的信，数字里算不到）
@@ -239,7 +243,7 @@ export default function MailList() {
                   <span onClick={(e) => { e.stopPropagation(); s.toggleCheck(m.id) }} title={L('选择', 'Select')}>
                     {isChecked
                       ? <span className="avatar" style={{ background: 'var(--navy)', color: '#fff' }}><Icon name="check" size={18} /></span>
-                      : <Avatar name={p.name} email={p.email} badge={s.accounts.length > 1 ? acc?.color : undefined} />}
+                      : <Avatar name={p.name} email={p.email} />}
                   </span>
                   <div style={{ minWidth: 0 }}>
                     <div className="row" style={{ alignItems: 'baseline', gap: 6 }}>
@@ -247,6 +251,7 @@ export default function MailList() {
                       {th && <span className="tcount" title={L(`这个会话有 ${th.count} 封`, `${th.count} emails in this conversation`)}>{th.count}</span>}
                       {(th ? th.hasAtt : m.hasAtt) && <Icon name="clip" size={13} style={{ color: 'var(--ter)', alignSelf: 'center' }} />}
                       {(th ? th.flagged : m.flagged) && <Icon name="flag" size={13} className="flag" style={{ alignSelf: 'center' }} />}
+                      {s.accounts.length > 1 && acc && !viewAcc && <span className="acctname truncate" style={{ '--ac': acc.color } as CSSProperties} title={acc.email}>{accountNames.get(acc.id)}</span>}
                       <span className="time">{shortTime(m.date)}</span>
                     </div>
                     <div className="subj truncate">{m.subject || L('（无主题）', '(No subject)')}</div>

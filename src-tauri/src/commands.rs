@@ -714,6 +714,9 @@ pub(crate) fn read_full(st: &crate::store::Store, id: i64, inline_images: bool) 
         )
         .map_err(e)?;
     full.code = crate::text::find_code(&full.lite.subject, &full.text).unwrap_or_default();
+    for attachment in &mut full.atts {
+        attachment.name = mime::fix_att_name(&attachment.name, &attachment.mime);
+    }
     // 内嵌图片 cid: → data:
     if inline_images && full.html.contains("cid:") {
         if let Ok(raw) = std::fs::read(st.eml_path(id)) {
@@ -1179,6 +1182,7 @@ async fn add_account_inner(ctx: State<'_, Arc<Ctx>>, input: AccountIn) -> Res<i6
             if g.provider != input.provider {
                 return Err(crate::i18n::t("登录的账号类型不对，请重新登录", "Wrong account type. Please sign in again.").into());
             }
+            oauth::check_mail_scope(&g)?;
             Some(g)
         }
         None => None,
@@ -1284,6 +1288,7 @@ pub async fn update_account(ctx: State<'_, Arc<Ctx>>, id: i64, patch: AccountPat
         if g.email != email || g.provider != provider {
             return Err(tr!("登录的是 {}，不是 {email}，请换成这个账号重新登录", "You signed in as {}, not {email}. Please sign in with that account.", g.email));
         }
+        oauth::check_mail_scope(&g)?;
         secret::set(&secret::account_key(id), &g.refresh).map_err(e)?;
         ctx.store.lock().unwrap().conn.execute("UPDATE accounts SET auth='oauth' WHERE id=?", [id]).map_err(e)?;
         oauth::remember(id, g.access, g.expires);
@@ -1368,6 +1373,44 @@ pub async fn retry_account(ctx: State<'_, Arc<Ctx>>, id: i64) -> Res<()> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn account_order(ctx: State<'_, Arc<Ctx>>, ids: Vec<i64>) -> Res<()> {
+    let mut st = ctx.store.lock().unwrap();
+    save_account_order(&mut st.conn, &ids)?;
+    drop(st);
+    changed(&ctx);
+    Ok(())
+}
+
+fn save_account_order(conn: &mut rusqlite::Connection, ids: &[i64]) -> Res<()> {
+    let tx = conn.transaction().map_err(e)?;
+    let count: usize = tx.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0)).map_err(e)?;
+    let stale = || crate::i18n::t("账号列表已变更，请刷新后重试", "The account list changed. Refresh and try again.").to_string();
+    if ids.len() != count || ids.iter().collect::<std::collections::HashSet<_>>().len() != count {
+        return Err(stale());
+    }
+    for (index, id) in ids.iter().enumerate() {
+        if tx.execute("UPDATE accounts SET sort=? WHERE id=?", params![index as i64 + 1, id]).map_err(e)? != 1 {
+            return Err(stale());
+        }
+    }
+    tx.commit().map_err(e)
+}
+
+#[cfg(test)]
+#[test]
+fn account_order_rejects_partial_and_stale_lists_atomically() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE accounts(id INTEGER PRIMARY KEY, sort INTEGER); INSERT INTO accounts VALUES(1,1),(2,2);").unwrap();
+    assert!(save_account_order(&mut conn, &[2]).is_err());
+    assert!(save_account_order(&mut conn, &[2, 2]).is_err());
+    assert!(save_account_order(&mut conn, &[2, 99]).is_err());
+    let order = |conn: &rusqlite::Connection| conn.query_row("SELECT group_concat(id) FROM (SELECT id FROM accounts ORDER BY sort, id)", [], |r| r.get::<_, String>(0)).unwrap();
+    assert_eq!(order(&conn), "1,2");
+    save_account_order(&mut conn, &[2, 1]).unwrap();
+    assert_eq!(order(&conn), "2,1");
+}
+
 // ---------------- 写信 ----------------
 
 #[derive(Deserialize)]
@@ -1419,14 +1462,14 @@ pub async fn precheck_send(ctx: State<'_, Arc<Ctx>>, d: DraftIn) -> Res<()> {
 }
 
 pub(crate) fn precheck_send_inner(ctx: &Ctx, d: &DraftIn) -> Res<()> {
-    let (provider, auth_kind): (String, String) = ctx
-        .store
-        .lock()
-        .unwrap()
-        .conn
-        .query_row("SELECT provider, auth FROM accounts WHERE id=?", [d.account_id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|_| crate::i18n::t("发件账号不存在", "The sending account doesn't exist").to_string())?;
-    let mut total: u64 = 0;
+    let (provider, auth_kind, content) = {
+        let st = ctx.store.lock().unwrap();
+        let (provider, auth_kind): (String, String) = st.conn
+            .query_row("SELECT provider, auth FROM accounts WHERE id=?", [d.account_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|_| crate::i18n::t("发件账号不存在", "The sending account doesn't exist").to_string())?;
+        (provider, auth_kind, draft_content(&st, d)?)
+    };
+    let mut total = smtp::inline_image_size(&crate::html::render(&content).html).map_err(e)? as u64;
     for p in &d.attachments {
         total += std::fs::metadata(p).map_err(|x| tr!("读取附件失败：{p}：{x}", "Couldn't read attachment {p}: {x}"))?.len();
     }
@@ -1437,11 +1480,11 @@ pub(crate) fn precheck_send_inner(ctx: &Ctx, d: &DraftIn) -> Res<()> {
         }
     }
     if total > 25 * 1024 * 1024 {
-        return Err(crate::i18n::t("附件加起来超过 25 MB，多数邮箱会拒收，请分开发或改用下载链接", "Attachments add up to more than 25 MB, which most mail servers reject. Send them separately or share a download link.").into());
+        return Err(crate::i18n::t("正文图片和附件合计超过 25 MB，请减少文件或改用下载链接", "Inline images and attachments exceed 25 MB. Remove some files or share a download link.").into());
     }
     // Outlook 一键登录走 Graph：附件先 base64 进 MIME，整封再 base64 一次，请求不能超过 4 MB，原始附件约 2 MB 封顶
     if provider == "outlook" && auth_kind == "oauth" && total * 16 / 9 > 4 * 1024 * 1024 - 128 * 1024 {
-        return Err(crate::i18n::t("Outlook 一次最多发约 2 MB 的附件，这封超了，请减少附件或改用下载链接", "Outlook can send only about 2 MB of attachments at a time. Remove some or share a download link.").into());
+        return Err(crate::i18n::t("Outlook 一次最多发送约 2 MB 的正文图片和附件，请减少文件或改用下载链接", "Outlook can send around 2 MB of inline images and attachments at a time. Remove some files or share a download link.").into());
     }
     Ok(())
 }
@@ -2129,11 +2172,11 @@ pub async fn mcp_regenerate_token() -> Res<serde_json::Value> {
 
 #[tauri::command]
 pub async fn set_ai_key(ctx: State<'_, Arc<Ctx>>, key: String) -> Res<bool> {
-    let k = key.trim();
+    let k = secret::unwrap_ai_key(&key);
     if k.is_empty() {
         secret::delete(secret::AI_KEY);
     } else {
-        secret::set(secret::AI_KEY, k).map_err(e)?;
+        secret::set(secret::AI_KEY, &k).map_err(e)?;
     }
     Ok(ai::configured(&ctx))
 }

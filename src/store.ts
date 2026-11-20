@@ -28,6 +28,7 @@ export type Page = 'mail' | 'todo' | 'digest' | 'settings'
 
 const PAGE = 80
 let seq = 0
+let listRequestSeq = 0
 let deferredUpdate = ''
 
 type S = {
@@ -290,11 +291,12 @@ export const useApp = create<S>((set, get) => ({
   loadList: async (silent = false) => {
     const s = get()
     if (s.view.kind === 'drafts') return
+    const request = ++listRequestSeq
     if (!silent) set({ loading: true })
     const key = JSON.stringify(queryFor(s, 0, 0))
     try {
       const r = await api.list(queryFor(s, 0, Math.max(PAGE, silent ? s.items.length : 0)))
-      if (JSON.stringify(queryFor(get(), 0, 0)) !== key) return // 期间切换了视图
+      if (request !== listRequestSeq || JSON.stringify(queryFor(get(), 0, 0)) !== key) return
       set({ items: r.items, total: r.total })
       get().loadCats()
       // 选中的邮件被移走了：自动选下一封
@@ -305,22 +307,25 @@ export const useApp = create<S>((set, get) => ({
       if (sel && sel !== get().pinned && !r.items.some((m) => m.id === sel) && !rowStill) set({ selected: null, open: null, ...NO_THREAD })
       else if (sel && tk) get().loadThread(false)
     } catch (e) {
-      get().toast(errText(e), { kind: 'err' })
+      if (request === listRequestSeq && JSON.stringify(queryFor(get(), 0, 0)) === key) get().toast(errText(e), { kind: 'err' })
     } finally {
-      if (JSON.stringify(queryFor(get(), 0, 0)) === key) set({ loading: false })
+      if (request === listRequestSeq && JSON.stringify(queryFor(get(), 0, 0)) === key) set({ loading: false })
     }
   },
 
   loadMore: async () => {
     const s = get()
-    if (s.loadingMore || s.items.length >= s.total) return
+    if (s.loading || s.loadingMore || s.items.length >= s.total) return
     set({ loadingMore: true })
     const key = JSON.stringify(queryFor(s, 0, 0))
+    const request = listRequestSeq
     try {
       const r = await api.list(queryFor(s, s.items.length, PAGE))
-      if (JSON.stringify(queryFor(get(), 0, 0)) !== key) return
+      if (request !== listRequestSeq || JSON.stringify(queryFor(get(), 0, 0)) !== key) return
       const have = new Set(get().items.map((m) => m.id))
       set({ items: [...get().items, ...r.items.filter((m) => !have.has(m.id))], total: r.total })
+    } catch (e) {
+      if (request === listRequestSeq && JSON.stringify(queryFor(get(), 0, 0)) === key) get().toast(errText(e), { kind: 'err' })
     } finally {
       set({ loadingMore: false })
     }
@@ -455,18 +460,24 @@ export const useApp = create<S>((set, get) => ({
       const remain = s.thread.filter((x) => !ids.includes(x.id))
       next = remain.length ? remain[remain.length - 1].id : rest[Math.min(idx, rest.length - 1)]?.id ?? null
     }
+    listRequestSeq++
     set({ items: rest, total: Math.max(0, s.total - picked.length), checked: new Set() })
     if (next !== s.selected) get().select(next)
     try {
       const token = await api.move(ids, target)
       // label 中文是动作（归档），英文是过去分词（archived）
       get().toast(L(`${ids.length > 1 ? ids.length + ' 封邮件' : '邮件'}已${label}`, `${ids.length > 1 ? ids.length + ' emails' : 'Email'} ${label}`), {
-        action: { label: L('撤销', 'Undo'), run: async () => { await api.undoMove(token); get().loadList(true); get().refreshMeta() } },
+        action: { label: L('撤销', 'Undo'), run: async () => {
+          try {
+            if (!await api.undoMove(token)) get().toast(L('已经过了撤销时间，邮件已移走', 'Too late to undo; the email has already been moved'), { kind: 'err' })
+          } catch (e) { get().toast(errText(e), { kind: 'err' }) }
+          get().loadList(true)
+          get().refreshMeta()
+        } },
         ttl: (get().settings?.undoSendSecs || 5) * 1000,
       })
+      get().loadList(true)
       get().refreshMeta()
-      // 按会话显示：那一行的封数、代表的那一封可能变了
-      if (get().settings?.conversationView) get().loadList(true)
     } catch (e) {
       get().toast(errText(e), { kind: 'err' })
       get().loadList(true)
@@ -474,14 +485,17 @@ export const useApp = create<S>((set, get) => ({
   },
 
   removeForever: async (ids) => {
+    listRequestSeq++
     set({ items: get().items.filter((m) => !ids.includes(m.id)), checked: new Set() })
     if (get().selected && ids.includes(get().selected!)) set({ selected: null, open: null, ...NO_THREAD })
     try {
       await api.deleteForever(ids)
-      if (get().settings?.conversationView) get().loadList(true)
+      get().loadList(true)
       get().toast(L(`已彻底删除 ${ids.length} 封邮件`, ids.length === 1 ? 'Email permanently deleted' : `${ids.length} emails permanently deleted`))
+      get().refreshMeta()
     } catch (e) {
       get().toast(errText(e), { kind: 'err' })
+      get().loadList(true)
     }
   },
 

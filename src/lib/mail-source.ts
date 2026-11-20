@@ -50,9 +50,19 @@ function isEditorTable(html: string) {
   })
 }
 
+function isEditorImage(html: string) {
+  const template = document.createElement('template')
+  template.innerHTML = html
+  const image = template.content.firstElementChild
+  return image?.getAttribute('data-kojoomail-image') === '1' && image.hasAttribute('src') &&
+    [...image.attributes].every(({ name, value }) => ['data-kojoomail-image', 'src', 'alt', 'title'].includes(name) ||
+      (['width', 'height'].includes(name) && /^\d+$/.test(value)))
+}
+
 /** 自定义 HTML 默认进入源码模式；已支持的编辑器样式可以直接重开。 */
 export function needsSourceMode(source: string) {
   const custom = source
+    .replace(/<img\b(?:[^<>"']|"[^"]*"|'[^']*')*>/gi, (image) => isEditorImage(image) ? '' : image)
     .replace(/<table\b(?=[^>]*data-kojoomail-table="1")[\s\S]*?<\/table>/gi, (table) => isEditorTable(table) ? '' : table)
     .replace(/<span\b(?=[^>]*data-kojoomail-style="1")([^>]*)>([\s\S]*?)<\/span>/gi, (html, _attrs, content) => {
       const template = document.createElement('template')

@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { ask } from '../lib/ask'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Icon } from '../icons'
 import { useApp } from '../store'
 import { api, errText, FOCUS_CATS, type Account, type McpInfo } from '../lib/api'
 import { copyText, mcpJson, mcpToml } from '../lib/mcp'
-import { ACCOUNT_COLORS, ago } from '../lib/format'
+import { ACCOUNT_COLORS, accountLabel, ago, initials } from '../lib/format'
 import { MdView, Seg, Switch } from '../ui'
 import { GuideContent } from './Guide'
 import { Rules } from './Rules'
@@ -158,16 +158,59 @@ function General() {
 
 function Accounts() {
   const s = useApp()
+  const [open, setOpen] = useState<Record<number, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('kjm.settings.accountsOpen') || '{}') ?? {} } catch { return {} }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('kjm.settings.accountsOpen', JSON.stringify(open)) } catch { /* 保留当前会话的展开状态 */ }
+  }, [open])
+  const orderPending = useRef(false)
+  const [ordering, setOrdering] = useState(false)
+  // 上移 / 下移：和相邻的换位置，侧栏等各处跟着变
+  const move = async (i: number, d: -1 | 1) => {
+    const accounts = useApp.getState().accounts
+    const j = i + d
+    if (orderPending.current || !accounts[i] || !accounts[j]) return
+    const ids = accounts.map((a, index) => index === i ? accounts[j].id : index === j ? accounts[i].id : a.id)
+    orderPending.current = true
+    setOrdering(true)
+    try {
+      await api.accountOrder(ids)
+      await s.refreshMeta()
+    } catch (e) { s.toast(errText(e), { kind: 'err' }) }
+    finally { orderPending.current = false; setOrdering(false) }
+  }
   return (
     <>
       <Head title={L('账号', 'Accounts')} lead={L('每个账号的名称、颜色、签名和登录密码。', 'Name, color, signature and sign-in for each account.')} />
-      {s.accounts.map((a) => <AccountCard key={a.id} a={a} />)}
+      {s.accounts.length === 1 && <AccountCard a={s.accounts[0]} />}
+      {s.accounts.length > 1 && (
+        <section>
+          <div className="gh row" style={{ marginRight: 14 }}>
+            <span>{L(`${s.accounts.length} 个账号`, `${s.accounts.length} accounts`)}</span>
+            <span className="row" style={{ marginLeft: 'auto', gap: 2, fontWeight: 400 }}>
+              <button className="btn link sm" onClick={() => setOpen(Object.fromEntries(s.accounts.map((a) => [a.id, true])))}>{L('全部展开', 'Expand all')}</button>
+              <span style={{ color: 'var(--ter)' }}>·</span>
+              <button className="btn link sm" onClick={() => setOpen(Object.fromEntries(s.accounts.map((a) => [a.id, false])))}>{L('全部收起', 'Collapse all')}</button>
+            </span>
+          </div>
+          {/* 多个账号：一张卡片里一行一个，点一行展开它的设置；连不上的那个默认展开（要去修） */}
+          <div className="group sq acct-list">
+            {s.accounts.map((a, i) => {
+              const err = ['error', 'offline'].includes(s.status[a.id]?.state ?? '')
+              const opened = open[a.id] ?? err
+              return <AccountCard key={a.id} a={a} open={opened} onToggle={() => setOpen({ ...open, [a.id]: !opened })}
+                onUp={!ordering && i > 0 ? () => move(i, -1) : undefined} onDown={!ordering && i < s.accounts.length - 1 ? () => move(i, 1) : undefined} />
+            })}
+          </div>
+        </section>
+      )}
       <div><button className="btn primary sq" onClick={() => s.set({ addAccount: 'pick' })}><Icon name="plus" size={15} />{L('添加账号', 'Add account')}</button></div>
     </>
   )
 }
 
-function AccountCard({ a }: { a: Account }) {
+function AccountCard({ a, open = true, onToggle, onUp, onDown }: { a: Account; open?: boolean; onToggle?: () => void; onUp?: () => void; onDown?: () => void }) {
   const s = useApp()
   const st = s.status[a.id]
   const [label, setLabel] = useState(a.label)
@@ -179,10 +222,28 @@ function AccountCard({ a }: { a: Account }) {
   useEffect(() => setFocus(a.focus), [a.focus.join('|')])
   const save = async (p: Parameters<typeof api.updateAccount>[1]) => { try { await api.updateAccount(a.id, p); s.refreshMeta() } catch (e) { s.toast(errText(e), { kind: 'err' }) } }
   const state = !st ? L('等待连接', 'Waiting to connect') : st.state === 'idle' ? L(`已同步 · ${st.lastOk ? ago(st.lastOk) : ''}`, `Synced · ${st.lastOk ? ago(st.lastOk) : ''}`) : st.state === 'syncing' ? L('正在同步', 'Syncing') : st.state === 'connecting' ? L('正在连接', 'Connecting') : st.state === 'error' ? st.error : L(`离线：${st.error}`, `Offline: ${st.error}`)
+  const bad = st?.state === 'error' || st?.state === 'offline'
+  const Wrap = onToggle ? 'div' : 'section'
   return (
-    <section>
-      <h2 className="gh row" style={{ gap: 6 }}><span className="dot" style={{ background: a.color }} />{a.email}</h2>
-      <div className="group sq">
+    <Wrap className={onToggle ? `acct${open ? ' open' : ''}` : undefined}>
+      {onToggle ? (
+        <div className="acct-row">
+        <button className="acct-head" aria-expanded={open} onClick={onToggle}>
+          <span className="acct-chip" style={{ '--ac': a.color } as CSSProperties}>{initials(a.label, a.email)}</span>
+          <span className="acct-name">
+            <span className="truncate">{accountLabel(a)}</span>
+            {a.label && <span className="truncate sub">{a.email}</span>}
+          </span>
+          <span className={`acct-state${bad ? ' bad' : st?.state === 'idle' || st?.state === 'syncing' ? ' ok' : ''}`}><i /><span className="truncate">{state}</span></span>
+          <span className={`chev${open ? ' open' : ''}`}><Icon name="right" size={13} /></span>
+        </button>
+        <span className="acct-move">
+          <button className="btn link sm" disabled={!onUp} onClick={onUp} aria-label={L('上移', 'Move up')} title={L('上移', 'Move up')}><Icon name="up" size={13} /></button>
+          <button className="btn link sm" disabled={!onDown} onClick={onDown} aria-label={L('下移', 'Move down')} title={L('下移', 'Move down')}><Icon name="down" size={13} /></button>
+        </span>
+        </div>
+      ) : <h2 className="gh row" style={{ gap: 6 }}><span className="dot" style={{ background: a.color }} />{a.email}</h2>}
+      {open && <div className={onToggle ? 'acct-body' : 'group sq'}>
         <div className="gr"><span className="lbl">{L('状态', 'Status')}</span><span style={{ fontSize: 12.5, color: st?.state === 'error' ? 'var(--accent-text)' : 'var(--sec)', maxWidth: 420, textAlign: 'right' }} className="truncate">{state}</span>
           {st?.state === 'error' && <button className="btn sm sq" onClick={() => s.set({ repairAccount: a.id })}>{L('修复', 'Fix')}</button>}
         </div>
@@ -225,8 +286,8 @@ function AccountCard({ a }: { a: Account }) {
             try { await api.removeAccount(a.id); await s.refreshMeta(); s.go({ kind: 'all' }) } catch (e) { s.toast(errText(e), { kind: 'err' }) }
           }}>{L('删除', 'Remove')}</button>
         </div>
-      </div>
-    </section>
+      </div>}
+    </Wrap>
   )
 }
 

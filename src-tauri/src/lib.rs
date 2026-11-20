@@ -406,6 +406,7 @@ pub fn run() {
             commands::update_account,
             commands::remove_account,
             commands::retry_account,
+            commands::account_order,
             commands::send_mail,
             commands::render_mail,
             commands::precheck_send,
