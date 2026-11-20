@@ -24,6 +24,30 @@ function withEditor(content, run, options = {}) {
   try { run(editor) } finally { editor.destroy() }
 }
 
+test('正文 Tab 插入可保存的缩进，Shift+Tab 撤掉缩进', () => {
+  withEditor('你好', (editor) => {
+    editor.commands.setTextSelection(1)
+    assert.equal(editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', cancelable: true })), false)
+    assert.equal(editor.getText(), '\u00a0'.repeat(4) + '你好')
+    withEditor(editor.getMarkdown(), (restored) => assert.equal(restored.getText(), editor.getText()))
+    assert.equal(editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, cancelable: true })), false)
+    assert.equal(editor.getText(), '你好')
+  })
+})
+
+test('Tab 保留表格跳格和列表层级快捷键', () => {
+  withEditor('| A | B |\n|---|---|\n| 甲 | 乙 |', (editor) => {
+    editor.commands.setTextSelection(4)
+    editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', cancelable: true }))
+    assert.equal(editor.state.selection.$from.parent.textContent, 'B')
+  })
+  withEditor('- 甲\n- 乙', (editor) => {
+    editor.commands.setTextSelection(8)
+    editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', cancelable: true }))
+    assert.match(editor.getHTML(), /<li><p>甲<\/p><ul><li><p>乙<\/p><\/li><\/ul><\/li>/)
+  })
+})
+
 test('打开原有 Markdown 不触发改写，五列表格、中文、转义符与软换行可视化读取', () => {
   const source = '您好！\n请审阅：\n\n| 项目 | 本周（11-09 \\~ 11-13） | 下周 | 里程碑 | 风险 |\n|:---|:---:|---:|---|---|\n| 平台 | ① 完成 **优化**；② 测试 | 持续跟进 | 已上线 | 无 |\n\n以上，请审阅。'
   let updates = 0

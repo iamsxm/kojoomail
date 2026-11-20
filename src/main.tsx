@@ -88,15 +88,16 @@ function useBackendEvents() {
 function useShortcuts(searchRef: React.RefObject<HTMLInputElement>) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (document.querySelector('dialog[open]')) return
+      if (e.defaultPrevented || document.querySelector('dialog[open]')) return
       const s = useApp.getState()
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); searchRef.current?.focus(); return }
       if ((e.ctrlKey || e.metaKey) && e.key === ',') { e.preventDefault(); s.set({ page: 'settings' }); return }
       // Ctrl+A：选中列表里已加载的全部邮件（输入框里照常全选文字）
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isTyping(e) && s.page === 'mail' && !s.compose && !s.addAccount && !s.repairAccount && !s.movePick && s.items.length) {
+      const inCompose = (e.target as Element | null)?.closest?.('.compose')
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isTyping(e) && s.page === 'mail' && !inCompose && !s.addAccount && !s.repairAccount && !s.movePick && s.items.length) {
         e.preventDefault(); s.set({ checked: new Set(s.items.map((m) => m.id)) }); return
       }
-      if (isTyping(e) || e.ctrlKey || e.metaKey || e.altKey || s.compose || s.addAccount || s.repairAccount || s.movePick || s.guide || document.querySelector('.menu')) return
+      if (isTyping(e) || inCompose || e.ctrlKey || e.metaKey || e.altKey || s.addAccount || s.repairAccount || s.movePick || s.guide || document.querySelector('.menu')) return
       if (!s.accounts.length) return
       const idx = curRow(s)
       const cur = s.open
@@ -144,21 +145,25 @@ function App() {
 
   if (!s.ready) return <div className="app"><TitleBar /><div className="body"><Loader text="" width={180} /></div></div>
 
+  const composing = s.page === 'mail' && s.composeVisible && !!s.compose
   return (
     <div className="app">
       <TitleBar searchRef={searchRef} />
-      <div className="body">
+      <div className={`body${composing ? ' writing' : ''}`}>
         {s.accounts.length === 0 ? <Welcome /> : (
           <>
             {s.page !== 'settings' && <Sidebar />}
-            {s.page === 'mail' && <div className="panel"><MailList /><Reader /></div>}
+            {(s.page === 'mail' || s.compose) && <div className="panel mail-panel" hidden={s.page !== 'mail'}>
+              {s.page === 'mail' && <MailList />}
+              {s.page === 'mail' && !composing && <Reader />}
+              {s.compose && <Compose key={s.compose.key} active={composing} />}
+            </div>}
             {s.page === 'todo' && <div className="panel"><TodoPage /></div>}
             {s.page === 'digest' && <div className="panel"><DigestPage /></div>}
             {s.page === 'settings' && <SettingsPage />}
           </>
         )}
       </div>
-      {s.compose && <Compose key={s.compose.key} />}
       {s.movePick && <MovePicker />}
       {s.addAccount && <AddAccount />}
       {s.repairAccount && <RepairAccount />}

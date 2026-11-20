@@ -144,10 +144,11 @@ async function main() {
   }
   await step('写信并发给自己', async () => {
     await page.click('[aria-label="写邮件"]')
-    await page.waitForSelector('.compose')
+    await page.waitForSelector('.mail-panel > .compose')
     await page.fill('#c-to', user)
     await page.keyboard.press('Enter')
     await page.fill('.compose input[aria-label="主题"]', SUBJ)
+    await page.getByRole('tab', { name: 'Markdown' }).click()
     await page.fill('.compose textarea', '你好，这是 **自测**：\n\n- 第一点\n- 第二点')
     await shot('08-compose')
     await page.click('.compose .btn.primary')

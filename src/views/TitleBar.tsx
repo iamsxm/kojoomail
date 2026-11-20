@@ -13,6 +13,7 @@ export default function TitleBar({ searchRef }: { searchRef?: React.RefObject<HT
   const search = useApp((s) => s.search)
   const doSearch = useApp((s) => s.doSearch)
   const openCompose = useApp((s) => s.openCompose)
+  const hasDraft = useApp((s) => !!s.compose)
   const set = useApp((s) => s.set)
   const [q, setQ] = useState('')
   const [maxed, setMaxed] = useState(false)
@@ -56,7 +57,7 @@ export default function TitleBar({ searchRef }: { searchRef?: React.RefObject<HT
       <div className="name" data-tauri-drag-region>Kojoo Mail</div>
       {sync}
       {accounts.length > 0 && (
-        <button className="tb" aria-label={L('写邮件', 'New email')} data-tip={L('写邮件  C', 'New email  C')} onClick={() => openCompose('new')} style={{ color: 'var(--ink-2)', marginLeft: 2 }}><Icon name="compose" /></button>
+        <button className="tb" aria-label={hasDraft ? L('继续写信', 'Continue composing') : L('写邮件', 'New email')} data-tip={hasDraft ? L('继续写信  C', 'Continue composing  C') : L('写邮件  C', 'New email  C')} onClick={() => openCompose('new')} style={{ color: hasDraft ? 'var(--navy-text)' : 'var(--ink-2)', marginLeft: 2 }}><Icon name="compose" /></button>
       )}
       {accounts.length > 0 ? (
         <form className="search sq" onSubmit={(e) => { e.preventDefault(); doSearch(q) }}>

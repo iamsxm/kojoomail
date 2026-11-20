@@ -1721,10 +1721,105 @@ pub(crate) fn delete_draft_inner(ctx: &Ctx, id: i64) -> Res<()> {
     Ok(())
 }
 
-/// 收件人自动补全：最近来往过的人
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactImportRow {
+    name: String,
+    email: String,
+    employee_id: String,
+}
+
+#[derive(Default, Serialize)]
+pub struct ContactImportResult {
+    added: usize,
+    updated: usize,
+    skipped: usize,
+}
+
+#[tauri::command]
+pub async fn import_contacts(ctx: State<'_, Arc<Ctx>>, contacts: Vec<ContactImportRow>) -> Res<ContactImportResult> {
+    if contacts.len() > 20_000 {
+        return Err(crate::i18n::t("一次最多导入 20,000 条联系人", "Import at most 20,000 contacts at a time").into());
+    }
+    save_contacts(&mut ctx.store.lock().unwrap().conn, contacts).map_err(e)
+}
+
+fn save_contacts(conn: &mut rusqlite::Connection, contacts: Vec<ContactImportRow>) -> rusqlite::Result<ContactImportResult> {
+    let tx = conn.transaction()?;
+    let mut result = ContactImportResult::default();
+    let mut seen = std::collections::HashSet::new();
+    {
+        let mut insert = tx.prepare("INSERT INTO imported_contacts(email,name,employee_id) VALUES(?1,?2,?3) ON CONFLICT(email) DO NOTHING")?;
+        let mut update = tx.prepare("UPDATE imported_contacts SET name=COALESCE(NULLIF(?2,''),name),employee_id=COALESCE(NULLIF(?3,''),employee_id)
+                                     WHERE email=?1 AND ((?2<>'' AND ?2<>name) OR (?3<>'' AND ?3<>employee_id))")?;
+        for contact in contacts {
+            let email = contact.email.trim();
+            let valid = email.len() <= 254 && email.rsplit_once('@').is_some_and(|(_, domain)| domain.contains('.')) && email.parse::<lettre::Address>().is_ok();
+            if !valid || !seen.insert(email.to_ascii_lowercase()) {
+                result.skipped += 1;
+                continue;
+            }
+            let name: String = contact.name.split_whitespace().collect::<Vec<_>>().join(" ").chars().filter(|c| !c.is_control()).take(200).collect();
+            let employee: String = contact.employee_id.trim().chars().filter(|c| !c.is_control()).take(120).collect();
+            let values = params![email, name, employee];
+            if insert.execute(values)? > 0 { result.added += 1; }
+            else if update.execute(values)? > 0 { result.updated += 1; }
+            else { result.skipped += 1; }
+        }
+    }
+    tx.commit()?;
+    Ok(result)
+}
+
+fn imported_contacts(conn: &rusqlite::Connection, query: &str, limit: i64) -> rusqlite::Result<Vec<Addr>> {
+    let query = query.trim();
+    if query.is_empty() { return Ok(vec![]); }
+    let mut stmt = conn.prepare("SELECT name,email FROM imported_contacts
+        WHERE instr(lower(name),lower(?1)) OR instr(lower(email),lower(?1)) OR instr(lower(employee_id),lower(?1))
+        ORDER BY (employee_id=?1 COLLATE NOCASE OR email=?1 COLLATE NOCASE OR name=?1 COLLATE NOCASE) DESC,
+                 (instr(lower(name),lower(?1))=1 OR instr(lower(email),lower(?1))=1 OR instr(lower(employee_id),lower(?1))=1) DESC,
+                 name,email LIMIT ?2")?;
+    let contacts = stmt.query_map(params![query, limit], |r| Ok(Addr { name: r.get(0)?, email: r.get(1)? }))?;
+    contacts.collect()
+}
+
+#[cfg(test)]
+#[test]
+fn imported_contacts_survive_reopen_and_merge_by_email() {
+    let dir = std::env::temp_dir().join(format!("kjm-contact-import-{}", std::process::id()));
+    let contact = |name: &str, email: &str, employee_id: &str| ContactImportRow { name: name.into(), email: email.into(), employee_id: employee_id.into() };
+    {
+        let mut store = crate::store::Store::open(&dir).unwrap();
+        let report = save_contacts(&mut store.conn, vec![contact("张三", "Work@example.com", "000123"), contact("重复", "work@example.com", ""), contact("无效", "no-address", "")]).unwrap();
+        assert_eq!((report.added, report.updated, report.skipped), (1, 0, 2));
+        let report = save_contacts(&mut store.conn, vec![contact("张三", "work@example.com", "000123"), contact("同事", "staff@example.com", "0001234")]).unwrap();
+        assert_eq!((report.added, report.updated, report.skipped), (1, 0, 1));
+        let report = save_contacts(&mut store.conn, vec![contact("张三丰", "WORK@example.com", "")]).unwrap();
+        assert_eq!((report.added, report.updated, report.skipped), (0, 1, 0));
+    }
+    let store = crate::store::Store::open(&dir).unwrap();
+    assert_eq!(imported_contacts(&store.conn, "000123", 8).unwrap()[0].name, "张三丰");
+    assert_eq!(imported_contacts(&store.conn, "WORK@", 8).unwrap().len(), 1);
+    assert_eq!(imported_contacts(&store.conn, "张三", 8).unwrap().len(), 1);
+    assert!(imported_contacts(&store.conn, "%", 8).unwrap().is_empty());
+    drop(store);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 写信联想优先匹配导入的联系人，再补充最近来往过的人。
 #[tauri::command]
 pub async fn contacts(ctx: State<'_, Arc<Ctx>>, q: String) -> Res<Vec<Addr>> {
-    contacts_in(&ctx, &q, &crate::mcp_scope::Scope::unrestricted(), 8)
+    let mut results = imported_contacts(&ctx.store.lock().unwrap().conn, &q, 8).map_err(e)?;
+    if results.len() < 8 {
+        let recent = contacts_in(&ctx, &q, &crate::mcp_scope::Scope::unrestricted(), 16)?;
+        for contact in recent {
+            if !results.iter().any(|entry| entry.email.eq_ignore_ascii_case(&contact.email)) {
+                results.push(contact);
+                if results.len() == 8 { break; }
+            }
+        }
+    }
+    Ok(results)
 }
 
 pub(crate) fn contacts_in(ctx: &Ctx, q: &str, allow: &crate::mcp_scope::Scope, limit: i64) -> Res<Vec<Addr>> {

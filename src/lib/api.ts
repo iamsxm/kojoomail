@@ -135,6 +135,7 @@ export const api = {
   drafts: () => call<Draft[]>('list_drafts'),
   deleteDraft: (id: number) => call<void>('delete_draft', { id }),
   contacts: (q: string) => call<Addr[]>('contacts', { q }),
+  importContacts: (contacts: import('./contact-csv').ContactRow[]) => call<{ added: number; updated: number; skipped: number }>('import_contacts', { contacts }),
   saveAttachment: (msgId: number, idx: number) => call<string>('save_attachment', { msgId, idx }),
   openUrl: (url: string) => call<void>('open_url', { url }),
   precheckSend: (d: DraftIn) => call<void>('precheck_send', { d }),

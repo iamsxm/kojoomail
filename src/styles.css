@@ -457,7 +457,10 @@ a { color: var(--navy); }
 .sig-preview > :last-child { margin-bottom: 0; }
 
 /* 写信 */
-.compose { width: min(1000px, calc(100vw - 80px)); max-width: none; height: calc(100vh - 100px); }
+.mail-panel[hidden], .compose[hidden] { display: none; }
+.writing > .side { width: clamp(156px, 14vw, 210px); }
+.writing > .mail-panel > .list { width: clamp(220px, 20vw, 340px); min-width: 0; }
+.compose { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; container: compose / inline-size; background: var(--card); }
 .compose .c-bar { height: 46px; display: flex; align-items: center; gap: 4px; padding: 0 10px 0 12px; border-bottom: .5px solid var(--line); flex: none; }
 .compose .c-main { flex: 1; min-height: 0; display: flex; }
 .compose .c-edit { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--card); }
@@ -474,15 +477,14 @@ a { color: var(--navy); }
 .compose .c-sig { display: grid; gap: 8px; flex: none; margin: 0 24px; padding: 0 0 8px; }
 .compose .c-sig .sig-preview { min-height: 0; max-height: 200px; }
 .compose .c-foot { display: flex; align-items: center; gap: 8px; padding: 10px 24px; border-top: .5px solid var(--line-2); flex-wrap: wrap; }
-.ai-side { width: 280px; flex: none; padding: 18px 14px; background: var(--paper); border-left: .5px solid var(--line); display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
+.compose .ai-side { width: 260px; flex: none; padding: 18px 14px; background: var(--paper); border-left: .5px solid var(--line); display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
 .act { display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; font-size: 13px; color: var(--ink-2); text-align: left; cursor: pointer; }
 .act:hover { background: var(--hover); }
 .act:disabled { opacity: .5; }
 .drop { position: absolute; inset: 10px; border-radius: 8px; border: 1.5px dashed var(--navy); background: var(--navy-soft); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--navy-text); z-index: 5; pointer-events: none; }
 
-/* 可移动的写信面板与正文局部缩放。缩放值只用于屏幕，不写入邮件。 */
-.compose .c-window-drag { cursor: move; touch-action: none; padding: 10px 0; }
-.compose .c-window-drag:focus-visible, .compose-resize:focus-visible { outline: 2px solid var(--navy); outline-offset: -2px; }
+/* 正文缩放值只用于屏幕，不写入邮件。 */
+.compose .c-title { margin: 0; padding: 10px 0; text-align: center; font-size: 13px; font-weight: 600; }
 .compose .c-bar { min-height: 46px; height: auto; flex-wrap: wrap; }
 .compose .c-edit { overflow: auto; }
 .compose .c-field { flex-shrink: 0; }
@@ -499,8 +501,7 @@ a { color: var(--navy); }
 .compose .c-preview-scroll { overflow: auto; flex: 1; min-height: 0; }
 .compose .c-preview-scroll .preview { overflow: visible; zoom: var(--compose-zoom); }
 .compose-focused .c-field, .compose-focused .ai-side, .compose-focused .c-sig { display: none; }
-.compose-resize { position: absolute; right: 1px; bottom: 1px; width: 22px; height: 22px; padding: 0; border: 0; background: linear-gradient(135deg, transparent 55%, var(--sec) 56%, var(--sec) 61%, transparent 62%, transparent 72%, var(--sec) 73%, var(--sec) 78%, transparent 79%); cursor: nwse-resize; touch-action: none; border-radius: 0 0 10px 0; }
-.mail-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.mail-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; container-type: inline-size; }
 .editor-toolbar { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; padding: 7px 20px; border-bottom: .5px solid var(--line-2); flex: none; }
 .editor-toolbar select { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; padding: 4px; font: inherit; font-size: 12px; height: 30px; }
 .editor-font-family { max-width: 144px; }
@@ -523,7 +524,7 @@ a { color: var(--navy); }
 .editor-custom-color-row input[type="text"] { min-width: 0; width: 84px; flex: 1; height: 30px; padding: 4px 6px; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; user-select: text; font-size: 12px; }
 .editor-custom-color-row input[type="color"] { width: 30px; height: 30px; padding: 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--card); cursor: pointer; }
 .editor-custom-color [role="alert"] { color: var(--accent-text); font-size: 11px; }
-.editor-tool { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; padding: 0 6px; font: inherit; font-size: 14px; color: var(--ink-2); background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
+.editor-tool { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; padding: 0 6px; font: inherit; font-size: 14px; white-space: nowrap; color: var(--ink-2); background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
 .editor-tool:hover { background: var(--hover); }
 .editor-tool[aria-pressed="true"] { color: var(--navy-text); background: var(--sel); box-shadow: inset 0 0 0 1px var(--line); }
 .editor-tool:disabled { opacity: .35; cursor: default; }
@@ -554,7 +555,6 @@ a { color: var(--navy); }
 /* Explicit send sizes bypass inherited font-size. Scale only those inline spans,
    leaving table coordinates unchanged for ProseMirror's column resizing. */
 .mail-document span[data-kojoomail-style="1"][style*="font-size"] { zoom: var(--compose-zoom); }
-.mail-document:focus-visible { box-shadow: -2px 0 0 var(--line); }
 .mail-document p { margin: 0 0 .7em; }
 .mail-document > :first-child { margin-top: 0; }
 .mail-document h1, .mail-document h2, .mail-document h3 { line-height: 1.35; }
@@ -580,16 +580,27 @@ a { color: var(--navy); }
 .mail-document ul[data-type="taskList"] li { display: flex; gap: 8px; }
 .mail-document ul[data-type="taskList"] li > div { flex: 1; }
 .editor-loading { padding: 24px; color: var(--sec); font-size: 13px; }
-@media (max-width: 850px) {
-  .compose .ai-side { width: 220px; }
-  .compose .c-field { margin: 0 14px; }
-  .compose .c-editor-controls, .editor-toolbar, .editor-table-tools { padding-left: 14px; padding-right: 14px; }
+@container (max-width: 880px) {
+  .editor-toolbar { gap: 2px; padding-inline: 12px; }
+  .editor-tool { min-width: 28px; padding-inline: 4px; }
+  .editor-font-family { max-width: 112px; }
+  .editor-font-size { max-width: 82px; }
+  .editor-divider { margin-inline: 2px; }
 }
-@media (max-width: 700px) {
-  .compose .ai-side { width: 180px; padding: 12px 8px; }
+@container (max-width: 780px) {
+  .editor-toolbar { gap: 1px; padding-inline: 8px; }
+  .editor-font-family { max-width: 102px; }
+  .editor-font-size { max-width: 76px; }
+}
+@container compose (max-width: 1080px) {
+  .compose .c-main { flex-direction: column; }
+  .compose .ai-side { width: auto; max-height: min(36%, 240px); border-left: 0; border-top: .5px solid var(--line); padding: 12px 14px; }
+}
+@container compose (max-width: 660px) {
+  .compose .c-field { margin: 0 14px; }
+  .compose .c-editor-controls, .editor-table-tools { padding-left: 14px; padding-right: 14px; }
   .compose .c-focus-toggle { margin-left: auto; }
   .compose .c-bar .btn { font-size: 12px; }
-  .link-popover { position: fixed; top: auto; left: 16px; right: 16px; width: auto; }
 }
 
 /* 待办 */

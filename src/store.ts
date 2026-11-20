@@ -30,6 +30,13 @@ const PAGE = 80
 let seq = 0
 let listRequestSeq = 0
 let deferredUpdate = ''
+let composeSaver: { key: number; save: () => Promise<boolean> } | null = null
+
+export function registerComposeSave(key: number, save: () => Promise<boolean>) {
+  const entry = { key, save }
+  composeSaver = entry
+  return () => { if (composeSaver === entry) composeSaver = null }
+}
 
 type S = {
   ready: boolean
@@ -72,6 +79,7 @@ type S = {
   openLoading: boolean
   openError: string
   compose: Compose | null
+  composeVisible: boolean
   addAccount: false | string
   repairAccount: number | null
   /** 教程弹窗（欢迎页用；有账号后在设置里看） */
@@ -110,7 +118,7 @@ type S = {
   move: (ids: number[], target: string, label: string) => Promise<void>
   removeForever: (ids: number[]) => Promise<void>
   later: (ids: number[], until: number | null) => Promise<void>
-  openCompose: (mode: ComposeMode, base?: MsgFull | null, extra?: Partial<Compose>) => void
+  openCompose: (mode: ComposeMode, base?: MsgFull | null, extra?: Partial<Compose>) => Promise<void>
   /** 去「设置 → AI 与模型」 */
   openAiSettings: () => void
   /** 下载并安装新版本（装完自动重启） */
@@ -210,6 +218,7 @@ export const useApp = create<S>((set, get) => ({
   openLoading: false,
   openError: '',
   compose: null,
+  composeVisible: false,
   addAccount: false,
   repairAccount: null,
   guide: false,
@@ -235,7 +244,7 @@ export const useApp = create<S>((set, get) => ({
   },
 
   go: (v) => {
-    set({ pinned: null, page: 'mail', view: v, filter: 'all', cats: [], search: '', selected: null, open: null, ...NO_THREAD, checked: new Set(), items: [], loading: true })
+    set({ pinned: null, page: 'mail', composeVisible: false, view: v, filter: 'all', cats: [], search: '', selected: null, open: null, ...NO_THREAD, checked: new Set(), items: [], loading: true })
     if (v.kind === 'folder') api.openFolder(v.folderId).catch(() => {})
     if (v.kind !== 'drafts') get().loadList()
     else set({ loading: false })
@@ -248,7 +257,7 @@ export const useApp = create<S>((set, get) => ({
 
   doSearch: (q) => {
     const t = q.trim()
-    set({ pinned: null, page: 'mail', search: t, ask: null, selected: null, open: null, ...NO_THREAD, checked: new Set(), items: [], loading: true })
+    set({ pinned: null, page: 'mail', composeVisible: false, search: t, ask: null, selected: null, open: null, ...NO_THREAD, checked: new Set(), items: [], loading: true })
     get().loadList()
     // 像是在提问（问号结尾、疑问词开头）就直接问 AI，结果显示在搜索结果上方
     if (t && get().aiConfigured && isQuestion(t)) get().askAi(t)
@@ -333,7 +342,7 @@ export const useApp = create<S>((set, get) => ({
 
   select: async (id) => {
     // 换到同一串会话里的另一封时，串留着；其余情况先清掉
-    set({ selected: id, openError: '', ...(id !== get().pinned ? { pinned: null } : {}), ...(id != null && get().thread.some((x) => x.id === id) ? {} : NO_THREAD) })
+    set({ selected: id, composeVisible: false, openError: '', ...(id !== get().pinned ? { pinned: null } : {}), ...(id != null && get().thread.some((x) => x.id === id) ? {} : NO_THREAD) })
     if (id == null) { set({ open: null }); return }
     openedSince.add(id)
     const lite = get().items.find((m) => m.id === id)
@@ -509,7 +518,18 @@ export const useApp = create<S>((set, get) => ({
     get().refreshMeta()
   },
 
-  openCompose: (mode, base = null, extra = {}) => set({ compose: { key: ++seq, mode, base, ...extra } }),
+  openCompose: async (mode, base = null, extra = {}) => {
+    const current = get().compose
+    if (current) {
+      if ((mode === 'new' && !extra.prefill) || (extra.draftId != null && extra.draftId === current.draftId)) {
+        set({ page: 'mail', composeVisible: true })
+        return
+      }
+      if (composeSaver?.key === current.key && !await composeSaver.save()) return
+      if (get().compose?.key !== current.key) return
+    }
+    set({ page: 'mail', composeVisible: true, compose: { mode, base, ...extra, key: ++seq } })
+  },
   openAiSettings: () => set({ page: 'settings', settingsTab: 'ai' }),
   promptUpdate: (info, manual = false) => {
     if (get().updateBusy) return

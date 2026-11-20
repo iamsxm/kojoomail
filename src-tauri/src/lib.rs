@@ -414,6 +414,7 @@ pub fn run() {
             commands::list_drafts,
             commands::delete_draft,
             commands::contacts,
+            commands::import_contacts,
             commands::save_attachment,
             commands::open_url,
             commands::list_todos,
