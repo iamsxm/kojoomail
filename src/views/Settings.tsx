@@ -5,6 +5,7 @@ import { Icon } from '../icons'
 import { useApp } from '../store'
 import { api, errText, FOCUS_CATS, type Account, type McpInfo } from '../lib/api'
 import { copyText, mcpJson, mcpToml } from '../lib/mcp'
+import { MAX_CONTACT_FILE_BYTES, parseContactCsv } from '../lib/contact-csv'
 import { ACCOUNT_COLORS, accountLabel, ago, initials } from '../lib/format'
 import { MdView, Seg, Switch } from '../ui'
 import { GuideContent } from './Guide'
@@ -14,7 +15,7 @@ import { L, catLabel } from '../lib/i18n'
 
 // 侧栏分组，和主界面侧栏一样带小标题
 const GROUPS: [string, [string, string, string][]][] = [
-  [L('基本', 'Basics'), [['general', 'gear', L('通用', 'General')], ['accounts', 'mail', L('账号', 'Accounts')], ['ai', 'sparkle', L('AI 与模型', 'AI & models')], ['mcp', 'external', L('MCP 服务', 'MCP server')]]],
+  [L('基本', 'Basics'), [['general', 'gear', L('通用', 'General')], ['accounts', 'mail', L('账号', 'Accounts')], ['contacts', 'user', L('联系人', 'Contacts')], ['ai', 'sparkle', L('AI 与模型', 'AI & models')], ['mcp', 'external', L('MCP 服务', 'MCP server')]]],
   [L('提醒与操作', 'Alerts & controls'), [['notify', 'bell', L('通知与隐私', 'Notifications & privacy')], ['rules', 'sliders', L('邮件规则', 'Mail rules')], ['keys', 'keyboard', L('快捷键', 'Shortcuts')]]],
   [L('帮助', 'Help'), [['guide', 'doc', L('使用教程', 'Guide')], ['about', 'info', L('关于', 'About')]]],
 ]
@@ -43,6 +44,7 @@ export default function SettingsPage() {
         <div className="inner">
           {tab === 'general' && <General />}
           {tab === 'accounts' && <Accounts />}
+          {tab === 'contacts' && <Contacts />}
           {tab === 'ai' && <Ai />}
           {tab === 'mcp' && <Mcp />}
           {tab === 'notify' && <NotifyPrivacy />}
@@ -57,6 +59,51 @@ export default function SettingsPage() {
 }
 
 const Head = ({ title, lead }: { title: string; lead: string }) => <div><h1>{title}</h1><p className="lead">{lead}</p></div>
+
+function Contacts() {
+  const input = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ text: string; error: boolean } | null>(null)
+  const importFile = async (file: File) => {
+    setResult(null)
+    setBusy(true)
+    try {
+      if (file.size > MAX_CONTACT_FILE_BYTES) throw new Error('file-limit')
+      const rows = parseContactCsv(new Uint8Array(await file.arrayBuffer()))
+      const { added, updated, skipped } = await api.importContacts(rows)
+      setResult({ text: L(`新增 ${added} 条，更新 ${updated} 条，跳过 ${skipped} 条。`, `Added ${added}, updated ${updated}, skipped ${skipped}.`), error: false })
+    } catch (error) {
+      const messages: Record<string, string> = {
+        'email-column': L('找不到邮件地址列。请在第一行使用「邮件地址」「邮箱」或 Email。', 'Email column missing. Use Email or Email Address in the first row.'),
+        'file-limit': L('CSV 文件最大 5 MB。', 'The CSV can be up to 5 MB.'),
+        'row-limit': L('一次最多导入 20,000 条联系人。', 'Import at most 20,000 contacts at a time.'),
+        encoding: L('读取失败。请用 UTF-8、GB18030 或带 BOM 的 UTF-16 保存 CSV。', 'Save the CSV as UTF-8, GB18030 or UTF-16 with a BOM.'),
+        csv: L('CSV 格式有误。请检查逗号分隔和引号是否成对。', 'Check the comma separators and quotation marks in the CSV.'),
+        empty: L('CSV 中没有联系人行。', 'The CSV contains no contact rows.'),
+      }
+      const reason = errText(error)
+      setResult({ text: messages[reason] ?? L(`导入失败：${reason}`, `Import failed: ${reason}`), error: true })
+    } finally { setBusy(false) }
+  }
+  return <>
+    <Head title={L('联系人', 'Contacts')} lead={L('写信时可用姓名、工号或邮箱查找已导入的联系人。', 'Search imported contacts by name, employee ID or email when composing.')} />
+    <section className="group sq" aria-label={L('导入联系人', 'Import contacts')}>
+      <div className="gr">
+        <div className="grow">
+          <div className="lbl">{L('从 CSV 导入联系人', 'Import contacts from CSV')}</div>
+          <div className="sub">{L('第一行需包含邮件地址。姓名、工号可选。重复邮箱会合并。', 'Include an email column in the first row. Name and employee ID are optional. Matching addresses are merged.')}</div>
+        </div>
+        <button type="button" className="btn sm sq" disabled={busy} onClick={() => input.current?.click()}>{busy ? L('正在导入…', 'Importing…') : L('选择 CSV', 'Choose CSV')}</button>
+        <input type="file" accept=".csv,text/csv" hidden ref={input} onChange={(e) => {
+          const file = e.currentTarget.files?.[0]
+          e.currentTarget.value = ''
+          if (file) void importFile(file)
+        }} />
+      </div>
+      {result && <div className="gr" role={result.error ? 'alert' : 'status'}><span style={{ color: result.error ? 'var(--accent-text)' : 'var(--sec)' }}>{result.text}</span></div>}
+    </section>
+  </>
+}
 
 function General() {
   const s = useApp()

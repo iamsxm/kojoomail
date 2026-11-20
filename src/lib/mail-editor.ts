@@ -1,4 +1,5 @@
-import { generateHTML, type Editor, type JSONContent } from '@tiptap/core'
+import { Extension, generateHTML, type Editor, type JSONContent } from '@tiptap/core'
+import { TextSelection } from '@tiptap/pm/state'
 import StarterKit from '@tiptap/starter-kit'
 import { Markdown } from '@tiptap/markdown'
 import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table'
@@ -163,6 +164,38 @@ const MailTable = Table.extend({
   },
 })
 
+const indent = '\u00a0'.repeat(4)
+const MailIndentation = Extension.create({
+  name: 'mailIndentation',
+  // Table and list shortcuts have priority over plain-text indentation.
+  priority: 50,
+  addKeyboardShortcuts() {
+    const editor = this.editor
+    const inList = () => editor.isActive('listItem') || editor.isActive('taskItem')
+    return {
+      Tab: () => {
+        if (!editor.isEditable || editor.view.composing || editor.isActive('table')) return false
+        if (inList()) return true // The first item has no preceding item to indent under.
+        if (!(editor.state.selection instanceof TextSelection)) return false
+        return editor.commands.command(({ tr }) => {
+          // Non-breaking spaces survive Markdown parsing and HTML whitespace collapse.
+          tr.insertText(editor.isActive('codeBlock') ? '    ' : indent)
+          return true
+        })
+      },
+      'Shift-Tab': () => {
+        const { selection } = editor.state
+        if (!editor.isEditable || editor.view.composing || editor.isActive('table') || inList() || !(selection instanceof TextSelection) || !selection.empty) return false
+        const { $from } = selection
+        const preceding = $from.parent.textBetween(Math.max(0, $from.parentOffset - 4), $from.parentOffset, '', '\ufffc')
+        const length = preceding.endsWith(indent) || preceding.endsWith('    ') ? 4 : preceding.endsWith('\t') ? 1 : 0
+        if (!length) return false
+        return editor.commands.deleteRange({ from: $from.pos - length, to: $from.pos })
+      },
+    }
+  },
+})
+
 export function mailEditorExtensions() {
-  return [...baseExtensions(), MailTable.configure(tableOptions), Markdown.configure({ markedOptions: { gfm: true, breaks: true } })]
+  return [...baseExtensions(), MailTable.configure(tableOptions), MailIndentation, Markdown.configure({ markedOptions: { gfm: true, breaks: true } })]
 }

@@ -3,21 +3,20 @@ import { ask } from '../lib/ask'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { Icon } from '../icons'
-import { useApp, pendingSends } from '../store'
+import { useApp, pendingSends, registerComposeSave } from '../store'
 import { api, errText, type Addr, type DraftIn } from '../lib/api'
 import { parseAddrs, validEmail, fullTime } from '../lib/format'
 import type { MailContent, MailQuote } from '../lib/mail-content'
-import { MdView, Seg, Sheet, useMenu } from '../ui'
+import { MdView, Seg, useMenu } from '../ui'
 import { keyText } from '../lib/platform'
 import { L, EN } from '../lib/i18n'
-import { useComposeFrame } from '../lib/use-compose-frame'
 import { needsSourceMode } from '../lib/mail-source'
 
 const MailEditor = lazy(() => import('./MailEditor'))
 
 type Field = 'to' | 'cc' | 'bcc'
 
-export default function Compose() {
+export default function Compose({ active }: { active: boolean }) {
   const s = useApp()
   const c = s.compose!
   const base = c.base || null
@@ -65,49 +64,84 @@ export default function Compose() {
   const [visualMounted, setVisualMounted] = useState(mode === 'visual')
   const [zoom, setZoom] = useState(100)
   const [focused, setFocused] = useState(false)
-  const frame = useComposeFrame()
   const [files, setFiles] = useState<string[]>(initial.files)
   const [dragging, setDragging] = useState(false)
-  const [draftId, setDraftId] = useState<number | null>(c.draftId ?? null)
+  const draftId = useRef(c.draftId ?? null)
   const [savedAt, setSavedAt] = useState<number | null>(null)
-  const [aiOpen, setAiOpen] = useState(s.aiConfigured)
+  const [aiOpen, setAiOpen] = useState(false)
   const [aiBusy, setAiBusy] = useState('')
   const [tone, setTone] = useState('pro')
   const dirty = useRef(false)
+  const editRevision = useRef(0)
   const sending = useRef(false)
+  const saveQueue = useRef<Promise<number | undefined>>(Promise.resolve(undefined))
+  const autosave = useRef<ReturnType<typeof setTimeout> | undefined>()
   const bodyRef = useRef<HTMLTextAreaElement>(null)
+  const paneRef = useRef<HTMLElement>(null)
   const menu = useMenu()
 
   const sig = me(accountId)?.signature || ''
   const content: MailContent = useMemo(() => ({ body, signature: sig, quote: initial.quote }), [body, sig, initial.quote])
 
   const draft = (): DraftIn => ({
-    id: draftId, accountId, to: rc.to, cc: rc.cc, bcc: rc.bcc, subject,
+    id: draftId.current, accountId, to: rc.to, cc: rc.cc, bcc: rc.bcc, subject,
     body, content, replyMsg: initial.replyMsg, mode: initial.mode, attachments: files,
   })
+  const latestDraft = useRef(draft)
+  latestDraft.current = draft
+  const saveDraft = (data: DraftIn) => {
+    const request = saveQueue.current.catch(() => undefined).then(async () => {
+      const id = await api.saveDraft({ ...data, id: draftId.current })
+      draftId.current = id
+      const current = useApp.getState().compose
+      if (current?.key === c.key) {
+        if (current.draftId !== id) s.set({ compose: { ...current, draftId: id } })
+        setSavedAt(Date.now())
+      }
+      return id
+    })
+    saveQueue.current = request
+    return request
+  }
 
   // 自动存草稿：停止输入 2 秒后
   useEffect(() => {
     if (!dirty.current) return
-    const t = setTimeout(async () => {
-      try { const id = await api.saveDraft(draft()); setDraftId(id); setSavedAt(Date.now()) } catch { /* 忽略 */ }
-    }, 2000)
+    const t = setTimeout(() => { saveDraft(draft()).catch(() => {}) }, 2000)
+    autosave.current = t
     return () => clearTimeout(t)
   }, [rc, subject, body, accountId, files])
-  const touch = () => { dirty.current = true }
+  const touch = () => { dirty.current = true; editRevision.current++ }
 
-  // 拖文件进窗口 = 添加附件
+  // 仅写信区接收附件拖放。
   useEffect(() => {
-    let un: (() => void) | undefined
+    if (!active) { setDragging(false); return }
+    let disposed = false
+    let unlisten: (() => void) | undefined
     getCurrentWebview().onDragDropEvent((e) => {
-      if (e.payload.type === 'enter' || e.payload.type === 'over') setDragging(true)
-      else if (e.payload.type === 'leave') setDragging(false)
-      else if (e.payload.type === 'drop') { const paths: string[] = e.payload.paths; setDragging(false); setFiles((f) => [...f, ...paths.filter((p) => !f.includes(p))]) }
-    }).then((f) => { un = f })
-    return () => un?.()
-  }, [])
+      if (disposed) return
+      if (e.payload.type === 'leave') { setDragging(false); return }
+      const rect = paneRef.current?.getBoundingClientRect()
+      const x = e.payload.position.x / devicePixelRatio
+      const y = e.payload.position.y / devicePixelRatio
+      const inside = !!rect && x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
+      setDragging(inside && e.payload.type !== 'drop')
+      if (inside && e.payload.type === 'drop') {
+        const paths = e.payload.paths
+        touch()
+        setFiles((old) => [...old, ...paths.filter((path) => !old.includes(path))])
+      }
+    }).then((f) => { if (disposed) f(); else unlisten = f }).catch(() => {})
+    return () => { disposed = true; unlisten?.() }
+  }, [active])
 
-  useEffect(() => { const t = setTimeout(() => (rc.to.length ? bodyRef.current : document.getElementById('c-to'))?.focus(), 50); return () => clearTimeout(t) }, [])
+  useEffect(() => {
+    if (!active) return
+    const t = setTimeout(() => (rc.to.length
+      ? bodyRef.current ?? paneRef.current?.querySelector<HTMLElement>('.mail-document')
+      : paneRef.current?.querySelector<HTMLElement>('#c-to'))?.focus(), 50)
+    return () => clearTimeout(t)
+  }, [active])
 
   const changeMode = async (next: typeof mode) => {
     if (next === 'visual' && needsSourceMode(body) && !await ask(L('正文包含 HTML 排版。可视化编辑会规范化格式，部分自定义样式可能无法保留。是否切换？保留原排版可继续使用 Markdown。', 'This message contains HTML. Visual editing normalizes formatting and may not preserve custom styles. Switch? Keep using Markdown to preserve the original formatting.'))) return
@@ -115,12 +149,35 @@ export default function Compose() {
     setMode(next)
   }
 
-  const close = async () => {
-    if (dirty.current && (body.trim() || subject.trim() || rc.to.length)) {
-      try { await api.saveDraft(draft()); s.toast(L('已存为草稿', 'Saved as draft')) } catch { /* */ }
+  const saveBeforeLeaving = async () => {
+    if (sending.current) return false
+    if (!dirty.current || !(draftId.current || body.trim() || subject.trim() || rc.to.length || rc.cc.length || rc.bcc.length || files.length)) return true
+    try {
+      let revision: number
+      do {
+        revision = editRevision.current
+        clearTimeout(autosave.current)
+        await saveDraft(latestDraft.current())
+      } while (revision !== editRevision.current)
+      s.toast(L('已存为草稿', 'Saved as draft'))
+      return true
+    } catch (e) {
+      s.toast(L(`草稿保存失败：${errText(e)}`, `Couldn't save draft: ${errText(e)}`), { kind: 'err' })
+      return false
     }
-    s.set({ compose: null })
+  }
+  const saveBeforeLeavingRef = useRef(saveBeforeLeaving)
+  saveBeforeLeavingRef.current = saveBeforeLeaving
+  useEffect(() => registerComposeSave(c.key, () => saveBeforeLeavingRef.current()), [c.key])
+
+  const clearCompose = () => {
+    if (useApp.getState().compose?.key === c.key) s.set({ compose: null, composeVisible: false })
+  }
+  const close = async () => {
+    if (!await saveBeforeLeaving()) return false
+    clearCompose()
     s.refreshMeta()
+    return true
   }
   // 格式按钮：在光标处插 Markdown 标记（发送时排版）。改完把光标放回去
   const edit = (next: string, a: number, b: number) => {
@@ -147,9 +204,14 @@ export default function Compose() {
   const closeRef = useRef(close)
   closeRef.current = close
   const discard = async () => {
-    if (draftId) await api.deleteDraft(draftId).catch(() => {})
-    s.set({ compose: null })
-    s.refreshMeta()
+    if (sending.current) return
+    clearTimeout(autosave.current)
+    await saveQueue.current.catch(() => {})
+    try {
+      if (draftId.current) await api.deleteDraft(draftId.current)
+      clearCompose()
+      s.refreshMeta()
+    } catch (e) { s.toast(errText(e), { kind: 'err' }) }
   }
 
   // 没填的占位：[日期] 这种。Markdown 的链接、图片 [文字](网址) 不算（签名里常有）；链接按钮插的 (https://) 还没填网址，照样提醒
@@ -171,8 +233,9 @@ export default function Compose() {
     const d = draft()
     try { await api.precheckSend(d) } catch (e) { s.toast(errText(e), { kind: 'err', ttl: 8000 }); return }
     // 先存草稿：发送失败或撤销时内容不会丢
-    try { d.id = await api.saveDraft(d) } catch { /* */ }
-    s.set({ compose: null })
+    clearTimeout(autosave.current)
+    try { d.id = await saveDraft(d) } catch { /* */ }
+    clearCompose()
     const secs = s.settings?.undoSendSecs ?? 5
     let cancelled = false
     let left = secs
@@ -215,33 +278,29 @@ export default function Compose() {
     try { const t = await api.aiDraft(base.id, tone, base.ai?.replyLang || 'auto', body.trim() ? `参考我已经写的内容：${body.slice(0, 500)}` : ''); setBody(t); touch() } catch (e) { s.toast(errText(e), { kind: 'err' }) } finally { setAiBusy('') }
   }
 
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (!document.querySelector('dialog[open]') && (e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); send() } }
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
-  })
-
   const title = c.mode === 'reply' || c.mode === 'replyAll' ? L(`回复 ${base?.fromName || base?.fromAddr || ''}`, `Reply to ${base?.fromName || base?.fromAddr || ''}`) : c.mode === 'forward' ? L('转发', 'Forward') : L('新邮件', 'New email')
 
   return (
-    <Sheet onClose={close} className={`compose${focused ? ' compose-focused' : ''}`} label={title} pinned style={{ ...frame.style, '--compose-zoom': zoom / 100 } as CSSProperties} onPointerDown={frame.onPointerDown}>
+    <section ref={paneRef} hidden={!active} className={`compose${focused ? ' compose-focused' : ''}`} aria-label={title} style={{ '--compose-zoom': zoom / 100 } as CSSProperties} onKeyDown={(e) => {
+      if (e.defaultPrevented || e.nativeEvent.isComposing || document.querySelector('dialog[open], [aria-modal="true"], [role="menu"]')) return
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); void send() }
+      else if (e.key === 'Escape') { e.preventDefault(); void close() }
+    }}>
       <div className="c-bar">
         <button className="btn primary sq" onClick={send}><Icon name="send" size={15} />{L('发送', 'Send')}</button>
         <span style={{ width: .5, height: 18, background: 'var(--line)', margin: '0 6px' }} />
         <button className="tb" aria-label={L('添加附件', 'Attach files')} data-tip={L('添加附件', 'Attach files')} onClick={async () => {
           const r = await pickFiles({ multiple: true, title: L('选择附件', 'Choose attachments') }).catch(() => null)
-          if (r) setFiles((f) => [...f, ...(Array.isArray(r) ? r : [r]).filter((p) => !f.includes(p))])
+          if (r) { touch(); setFiles((f) => [...f, ...(Array.isArray(r) ? r : [r]).filter((p) => !f.includes(p))]) }
         }}><Icon name="clip" /></button>
         <button className="tb" aria-label={L('舍弃草稿', 'Discard draft')} data-tip={L('舍弃草稿', 'Discard draft')} onClick={async () => { if (!body.trim() || await ask(L('舍弃这封草稿？', 'Discard this draft?'))) discard() }}><Icon name="trash" /></button>
-        <div className="grow truncate c-window-drag" data-compose-drag role="button" tabIndex={0} aria-label={L('移动写信窗口（方向键移动，Home 居中，双击最大化）', 'Move compose window (arrow keys move, Home centers, double-click maximizes)')} onKeyDown={(e) => frame.onKeyDown(e)} onDoubleClick={frame.toggleMaximize} style={{ textAlign: 'center', fontSize: 13, fontWeight: 600 }}>{title}</div>
+        <h2 className="grow truncate c-title">{title}</h2>
         {s.aiConfigured ? (
           <button className="btn sm sq" style={{ background: aiOpen ? 'var(--sel)' : 'transparent', boxShadow: 'none' }} aria-pressed={aiOpen} onClick={() => setAiOpen(!aiOpen)}><Icon name="sparkle" size={15} />{L('AI 助手', 'AI assistant')}</button>
         ) : (
-          <button className="btn sm sq" style={{ background: 'transparent', boxShadow: 'none', color: 'var(--sec)' }} data-tip={L('改写、翻译、核对要点要先设置 AI', 'Set up AI to rewrite, translate and fact check')} onClick={() => s.toast(L('还没设置 AI', "AI isn't set up yet"), { action: { label: L('存草稿并去设置', 'Save draft and set up'), run: async () => { if (useApp.getState().compose?.key === c.key) await closeRef.current(); s.openAiSettings() } }, ttl: 6000 })}><Icon name="sparkle" size={15} />{L('AI 助手', 'AI assistant')}</button>
+          <button className="btn sm sq" style={{ background: 'transparent', boxShadow: 'none', color: 'var(--sec)' }} data-tip={L('改写、翻译、核对要点要先设置 AI', 'Set up AI to rewrite, translate and fact check')} onClick={() => s.toast(L('还没设置 AI', "AI isn't set up yet"), { action: { label: L('存草稿并去设置', 'Save draft and set up'), run: async () => { if (useApp.getState().compose?.key !== c.key || await closeRef.current()) s.openAiSettings() } }, ttl: 6000 })}><Icon name="sparkle" size={15} />{L('AI 助手', 'AI assistant')}</button>
         )}
-        <button className="tb" aria-label={L('居中写信窗口', 'Center compose window')} data-tip={L('恢复大小并居中', 'Restore size and center')} onClick={frame.reset}><Icon name="refresh" /></button>
-        <button className="tb" aria-label={frame.maximized ? L('还原写信窗口', 'Restore compose window') : L('最大化写信窗口', 'Maximize compose window')} data-tip={frame.maximized ? L('还原', 'Restore') : L('最大化', 'Maximize')} onClick={frame.toggleMaximize}><Icon name={frame.maximized ? 'restore' : 'max'} /></button>
-        <button className="tb" aria-label={L('关闭（自动存草稿）', 'Close (saves draft)')} data-tip={L('关闭，自动存草稿', 'Close and save draft')} onClick={close}><Icon name="x" /></button>
+        <button className="tb" aria-label={L('返回阅读（自动存草稿）', 'Return to reading (saves draft)')} data-tip={L('返回阅读，自动存草稿', 'Return to reading and save draft')} onClick={close}><Icon name="x" /></button>
       </div>
       <div className="c-main">
         <div className="c-edit" style={{ position: 'relative' }}>
@@ -277,10 +336,21 @@ export default function Compose() {
           <div className="c-body">
             {visualMounted && <div className="c-visual" hidden={mode !== 'visual'}>
               <Suspense fallback={<div className="editor-loading">{L('正在加载编辑器…', 'Loading editor…')}</div>}>
-                <MailEditor value={body} onChange={(v) => { setBody(v); touch() }} autoFocus={initial.to.length > 0} active={mode === 'visual'} />
+                <MailEditor value={body} onChange={(v) => { setBody(v); touch() }} autoFocus={active && initial.to.length > 0} active={active && mode === 'visual'} />
               </Suspense>
             </div>}
-            {mode === 'edit' && <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('Markdown 正文', 'Markdown message body')} spellCheck={false} />}
+            {mode === 'edit' && <textarea ref={bodyRef} value={body} onChange={(e) => { setBody(e.target.value); touch() }} onKeyDown={(e) => {
+              if (e.key !== 'Tab' || e.altKey || e.ctrlKey || e.metaKey || e.nativeEvent.isComposing) return
+              const input = e.currentTarget
+              const { selectionStart: start, selectionEnd: end } = input
+              const preceding = input.value.slice(Math.max(0, start - 4), start)
+              const remove = preceding.endsWith('    ') ? 4 : preceding.endsWith('\t') ? 1 : 0
+              if (e.shiftKey && (start !== end || !remove)) return
+              e.preventDefault()
+              input.setRangeText(e.shiftKey ? '' : '    ', e.shiftKey ? start - remove : start, end, 'end')
+              setBody(input.value)
+              touch()
+            }} placeholder={L('写点什么…', 'Write something…')} aria-label={L('Markdown 正文', 'Markdown message body')} spellCheck={false} />}
             {mode === 'preview' && <div className="c-preview-scroll"><MdView className="preview" content={content} /></div>}
           </div>
           {mode !== 'preview' && (
@@ -312,7 +382,7 @@ export default function Compose() {
                 <span key={f} className="att sq" style={{ cursor: 'default' }}>
                   <span className="ext">{(name.split('.').pop() || 'FILE').slice(0, 4).toUpperCase()}</span>
                   <span className="truncate" style={{ maxWidth: 200 }}>{name}</span>
-                  <button className="tb" style={{ width: 20, height: 20 }} aria-label={L(`移除 ${name}`, `Remove ${name}`)} onClick={() => setFiles(files.filter((x) => x !== f))}><Icon name="x" size={12} /></button>
+                  <button className="tb" style={{ width: 20, height: 20 }} aria-label={L(`移除 ${name}`, `Remove ${name}`)} onClick={() => { touch(); setFiles(files.filter((x) => x !== f)) }}><Icon name="x" size={12} /></button>
                 </span>
               )
             })}
@@ -368,9 +438,8 @@ export default function Compose() {
           </aside>
         )}
       </div>
-      {!frame.maximized && <button className="compose-resize" data-compose-resize aria-label={L('调整写信窗口大小（拖动或使用方向键）', 'Resize compose window (drag or use arrow keys)')} onKeyDown={(e) => frame.onKeyDown(e, true)} title={L('拖动调整窗口大小', 'Drag to resize window')} />}
-      {menu.node}
-    </Sheet>
+      {active && menu.node}
+    </section>
   )
 }
 
@@ -382,10 +451,16 @@ function Recipients({ id, label, list, onChange, extra }: { id?: string; label: 
   const [sug, setSug] = useState<Addr[]>([])
   const [hi, setHi] = useState(0)
   useEffect(() => {
-    if (!q.trim()) { setSug([]); return }
-    const t = setTimeout(() => api.contacts(q).then((r) => { setSug(r.filter((a) => !list.some((x) => x.email.toLowerCase() === a.email.toLowerCase()))); setHi(0) }).catch(() => {}), 120)
-    return () => clearTimeout(t)
-  }, [q])
+    setSug([])
+    if (!q.trim()) return
+    let current = true
+    const t = setTimeout(() => api.contacts(q).then((r) => {
+      if (!current) return
+      setSug(r.filter((a) => !list.some((x) => x.email.toLowerCase() === a.email.toLowerCase())))
+      setHi(0)
+    }).catch(() => {}), 120)
+    return () => { current = false; clearTimeout(t) }
+  }, [q, list])
   const add = (a: Addr[]) => { onChange([...list, ...a.filter((x) => !list.some((y) => y.email.toLowerCase() === x.email.toLowerCase()))]); setQ(''); setSug([]) }
   const commit = () => { if (q.trim()) add(parseAddrs(q)) }
   return (
